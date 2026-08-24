@@ -4,7 +4,7 @@
 
 `inspect_step` — интерактивный strategy plugin для отладки Ansible playbook и ролей до выполнения каждой task. Он расширяет штатную стратегию `linear`.
 
-Текущая версия: **1.0.0**.
+Текущая версия: **1.1.0**.
 
 Техническая совместимость: **ansible-core 2.12–2.13**.  
 Основная протестированная версия: **ansible-core 2.13.13**.
@@ -13,6 +13,9 @@
 
 - вывод исходного определения текущей task до принятия решения о запуске;
 - выполнение, пропуск или продолжение без дальнейших обычных остановок task;
+- полное выполнение dynamic `include_tasks` или `include_role` с возвратом остановок;
+- управление явными meta-actions без показа неявных lifecycle-tasks Ansible;
+- плоский или древовидный просмотр tasks и выбор точного breakpoint по ID;
 - выполнение до breakpoint по имени task, role или tag через `go`;
 - просмотр переменных, вложенных путей, шаблонов, значений конкретного host и аргументов task;
 - предварительное вычисление `when` и сравнение Jinja-результатов между hosts task;
@@ -63,12 +66,13 @@ strategy_plugins = ./strategy_plugins
 ansible-playbook -i inventory playbook.yml --limit web01 --step
 ```
 
-При запуске плагин выводит `inspect_step version 1.0.0` и статус совместимости с Ansible. Перед каждой исполняемой task он показывает её определение и открывает prompt `inspect-step>`.
+При запуске плагин выводит `inspect_step version 1.1.0` и статус совместимости с Ansible. Перед каждой исполняемой task он показывает её определение и открывает prompt `inspect-step>`.
 
 ## Основные команды
 
 ```text
 r | run                         выполнить текущую task
+ra | run-all                    выполнить dynamic include целиком и вернуть остановки
 s | skip                        пропустить текущую task
 c | continue                    выполнить и отключить обычные остановки task
 g | go                          выполнять до настроенного breakpoint
@@ -89,8 +93,10 @@ loop when|args|template ITEM [host=HOST]
                                 исследовать item без его выполнения
 result [HOST|all] [depth=N]     показать результат предыдущей task
 watch add JINJA [host=HOST]     добавить наблюдаемое выражение
+tasks [tree] [FILTERS]          показать tasks и иерархию includes
+break pick TASK_ID              добавить точный breakpoint из списка tasks
 break task REGEX                добавить breakpoint по имени task
-args                            показать templated-аргументы task
+a | args                        показать templated-аргументы task
 raw                             показать исходные аргументы task
 template [HOST]                 показать результат template
 template-save FILE [HOST]       сохранить результат template локально
@@ -98,6 +104,8 @@ h | help | ?                    показать справку
 ```
 
 `vars` — основное имя команды, `v` — её полный короткий alias. `SELECTOR` может быть точным именем, dot-path, glob или явным regexp вида `regex=^role_.*$`. Параметры `host=HOST` и `depth=N` необязательны и работают одинаково с обоими именами. Суффикс `!` явно отключает маскирование.
+
+`tasks` показывает статически известные tasks со стабильными в пределах текущего play ID; `tasks tree` дополнительно отображает вложенность roles и includes. Доступны фильтры `host=HOST`, `regex=REGEXP`, `role=NAME` и `tag=TAG`. Потомки dynamic `include_tasks` и `include_role` появляются после их runtime-раскрытия Ansible. Команда `break pick TASK_ID` создаёт точный breakpoint по UUID для выбранной исполняемой task.
 
 После необработанной ошибки task prompt `inspect-failure>` предлагает `i | ignore` для продолжения с текущим step-режимом, `c | continue` для продолжения без обычных остановок или `a | abort` для сохранения штатного failed-поведения Ansible.
 

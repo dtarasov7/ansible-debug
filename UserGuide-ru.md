@@ -2,7 +2,7 @@
 
 [English](UserGuide.md) | [Русский](UserGuide-ru.md)
 
-В этом руководстве описаны установка, повседневное использование, просмотр переменных, изменение значений во время выполнения, безопасность и диагностика проблем для `inspect_step` версии 1.0.0.
+В этом руководстве описаны установка, повседневное использование, просмотр переменных, изменение значений во время выполнения, безопасность и диагностика проблем для `inspect_step` версии 1.1.0.
 
 ## 1. Назначение
 
@@ -17,6 +17,7 @@
 - вычислить составную Jinja-строку с переменными выбранного host;
 - предварительно проверить conditions, сравнить выражения между hosts и посмотреть прошлые результаты;
 - раскрыть host-specific items loop и посмотреть metadata loop-control;
+- посмотреть дерево tasks/includes текущего play и выбрать точный breakpoint по ID task;
 - отслеживать выбранные выражения и выполнять до breakpoint по task, role или tag;
 - отрендерить источник `ansible.builtin.template` до выполнения и посмотреть или сохранить результат;
 - сократить вывод очень больших вложенных структур переменных;
@@ -118,7 +119,7 @@ ansible-playbook -i inventory playbook.yml --limit web --step
 При инициализации стратегии один раз на процесс `ansible-playbook` выводится строка:
 
 ```text
-inspect_step version 1.0.0
+inspect_step version 1.1.0
 Ansible compatibility: ansible-core 2.13.13 is the primary tested version (technical range 2.12-2.13).
 ```
 
@@ -154,6 +155,7 @@ inspect-step>
 | Команда | Назначение | Маскирование секретов |
 |---|---|---|
 | `r`, `run` | Выполнить текущую task | Не применяется |
+| `ra`, `run-all` | Выполнить dynamic include и всех потомков, затем вернуть остановки task | Не применяется |
 | `s`, `skip` | Пропустить текущую task | Не применяется |
 | `c`, `continue` | Выполнить task и отключить последующие обычные остановки task | Не применяется |
 | `g`, `go` | Выполнять tasks до совпадения с настроенным breakpoint | Не применяется |
@@ -177,10 +179,12 @@ inspect-step>
 | `result! [HOST\|all] [depth=N]` | Показать предыдущий результат без маскирования | Намеренно отключено |
 | `watch add EXPRESSION [host=HOST]` | Добавить выражение для вывода на каждой остановке | Отключено |
 | `watch list`, `watch delete ID` | Показать или удалить watches | Не применяется |
+| `tasks [tree] [host=HOST] [regex=REGEXP] [role=NAME] [tag=TAG]` | Показать статически известные и runtime-раскрытые tasks | Не применяется |
+| `break pick TASK_ID` | Добавить точный breakpoint для записи task-browser | Не применяется |
 | `break task REGEX` | Остановить `go` при regexp-совпадении имени task | Не применяется |
 | `break role NAME`, `break tag TAG` | Остановить `go` при точном совпадении role или tag | Не применяется |
 | `break list`, `break delete ID` | Показать или удалить breakpoints | Не применяется |
-| `args` | Показать templated-аргументы task | Включено |
+| `a`, `args` | Показать templated-аргументы task | Включено |
 | `args!` | Показать templated-аргументы task | Намеренно отключено |
 | `raw` | Показать исходные `task.args` | Отключено |
 | `template [HOST]` | Отрендерить текущую template-task и показать результат | Намеренно отключено |
@@ -209,6 +213,20 @@ RUN: application : Configure service
 
 `run` эквивалентна `r`. Пока step mode остаётся включённым, следующая исполняемая task снова откроет prompt.
 
+### Полное выполнение dynamic include
+
+В prompt `include_tasks` или `include_role` используйте `ra` или `run-all`, чтобы выполнить dynamic include и всё его дерево потомков без промежуточных prompts task:
+
+```text
+inspect-step> ra
+
+RUN ALL: application : Load platform tasks
+```
+
+Вложенные dynamic includes и loops include остаются внутри выбранной области. Handlers, синхронно вызванные через `flush_handlers` внутри области, также выполняются без prompt task. Первая исполняемая task за пределами include выводит `RUN ALL COMPLETE` и снова открывает обычный prompt. Breakpoints и watches внутри области не останавливают выполнение, поскольку обычные prompts там не открываются; необработанная ошибка всё ещё может открыть `inspect-failure>`.
+
+Существующие команды сохраняют значение в prompt dynamic include: `s` пропускает весь include до его раскрытия, а `r` раскрывает его и затем останавливается на каждой подключённой task. `run-all` отклоняется для обычных tasks и статических `import_tasks` или `import_role`.
+
 ### Пропуск текущей task
 
 ```text
@@ -218,6 +236,8 @@ SKIP: application : Restart service
 ```
 
 `skip` эквивалентна `s`. Для lockstep-task действие пропускает task для текущей активной группы hosts.
+
+Inspector открывает один prompt выбора для каждой явной task `ansible.builtin.meta`, хотя ansible-core обычно исключает meta-actions из `--step`. Одно решение применяется ко всей активной lockstep-группе hosts: `r` выполняет action с её штатной семантикой Ansible, а `s` пропускает её для группы. Например, пропуск `end_play` переходит к следующей task, а выполнение завершает play. Неявные tasks `noop`, `flush_handlers` и `role_complete`, созданные Ansible, остаются скрытыми и выполняются штатно.
 
 ### Продолжение без следующих обычных остановок task
 
@@ -230,6 +250,24 @@ RUN: application : Configure service
 `continue` эквивалентна `c`. Текущая task выполняется, а остаток play проходит без обычных остановок просмотра task. При необработанной ошибке post-failure prompt всё ещё может появиться, чтобы оператор решил, должны ли затронутые hosts продолжить выполнение.
 
 ### Выполнение до breakpoint
+
+Сначала просмотрите tasks, если их имена, roles или структура includes заранее неизвестны:
+
+```text
+tasks
+tasks tree
+tasks tree host=web02 role=application
+tasks regex='(?i)configure|restart'
+tasks tag=deployment
+break pick 12
+go
+```
+
+`tasks` назначает стабильные в пределах текущего play числовые ID и показывает состояние `CURRENT`, `REACHED` или `PENDING` для выбранного inspection host. `REACHED` означает, что iterator дошёл до task, включая пропущенную в inspector task, но не подтверждает успешное выполнение. `host=HOST` выбирает этот status-view, но не может заранее вычислить будущие conditions `when` или зависящие от host dynamic includes. Вариант `tree` сохраняет скомпилированную вложенность roles и includes. При фильтрации дерева вместе с совпавшими tasks остаются их include-предки, чтобы контекст не терялся. `regex` использует Python substring search; `role` и `tag` проверяются точным регистрозависимым совпадением.
+
+Статические imports и roles компилируются до запуска strategy, поэтому их потомки видны сразу. Синтетическая import-группа помечена `static import; group only`; установить breakpoint на неё нельзя, поскольку runtime-остановки на этом узле не существует. Узлы dynamic `include_tasks` и `include_role` помечены `dynamic; not expanded`, а их потомки добавляются в это же дерево после раскрытия Ansible. До этого runtime-ID дочерних tasks ещё не существуют.
+
+`break pick TASK_ID` привязывается к внутреннему runtime UUID выбранной task, а не к её отображаемому имени. Это различает одинаково названные tasks и является самым точным способом выбрать одну конкретную task. Task IDs и выбранные breakpoints относятся к текущему play.
 
 Создайте один или несколько breakpoints, затем используйте `g` или `go`:
 
@@ -513,7 +551,7 @@ inspect-step> raw
 
 ### Аргументы после templating
 
-`args` выполняет templating аргументов с переменными default inspection host:
+`args` или её короткий alias `a` выполняет templating аргументов с переменными default inspection host:
 
 ```text
 inspect-step> args
@@ -521,6 +559,8 @@ inspect-step> args
 ```
 
 Распространённые ключи секретов рекурсивно маскируются. Используйте `args!`, чтобы явно отключить маскирование.
+
+Alias `a` доступен в обычном prompt `inspect-step>`. В prompt `inspect-failure>` команда `a` сохраняет отдельное значение: abort с сохранением ошибки Ansible.
 
 Просмотр аргументов является диагностическим. Он использует штатный templating Ansible, поэтому встроенный в аргументы task lookup может выполниться на controller во время preview и повторно при запуске task. Авторитетные templating и validation выполняются Ansible task executor.
 
@@ -1058,7 +1098,8 @@ Bare-аргумент, равный имени активного host, инте
 - Preview и item-aware команды loop не дают per-item выполнения, пропуска, retries или регистрации результатов.
 - Lockstep-task создаёт один prompt для своей активной группы hosts.
 - Preview `when` является диагностическим; executor повторно вычисляет condition после `run`, поэтому изменяемое состояние или lookups могут дать другое решение.
-- Внутренние `meta` и `noop` task следуют штатному step-поведению Ansible и могут не открывать prompt.
+- Каждая явная meta-task открывает один prompt inspector для своей активной lockstep-группы hosts; неявные lifecycle-tasks meta и noop, созданные Ansible, prompt не открывают.
+- `run-all` работает только для dynamic `include_tasks` и `include_role`; static imports раскрываются до запуска strategy и не могут открыть prompt уровня import.
 - Вывод исходного определения нормализует YAML и не сохраняет комментарии.
 - `set` изменяет только top-level переменные и не сохраняет изменения постоянно.
 - Команды просмотра, watches и управление breakpoints доступны в обычных pre-task prompts `inspect-step>`, но не в post-failure prompt выбора дальнейшего действия.
@@ -1296,6 +1337,7 @@ g
 
 ```text
 raw
+a
 args
 args!
 template

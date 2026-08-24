@@ -2,7 +2,7 @@
 
 [English](UserGuide.md) | [Русский](UserGuide-ru.md)
 
-This guide describes installation, daily use, variable inspection, runtime variable changes, security considerations, and troubleshooting for `inspect_step` version 1.0.0.
+This guide describes installation, daily use, variable inspection, runtime variable changes, security considerations, and troubleshooting for `inspect_step` version 1.1.0.
 
 ## 1. Purpose
 
@@ -17,6 +17,7 @@ The plugin is useful when you need to:
 - evaluate a composite Jinja string against variables of a selected host;
 - preview conditions, compare expressions across hosts, and inspect prior results;
 - expand host-specific loop items and inspect loop-control metadata;
+- browse the current play's task/include tree and select exact breakpoints by task ID;
 - track selected expressions and run to task, role, or tag breakpoints;
 - render an `ansible.builtin.template` source before execution and view or save the result;
 - reduce the output of very large nested variable structures;
@@ -118,7 +119,7 @@ ansible-playbook -i inventory playbook.yml --limit web --step
 At strategy initialization, the following line is printed once per `ansible-playbook` process:
 
 ```text
-inspect_step version 1.0.0
+inspect_step version 1.1.0
 Ansible compatibility: ansible-core 2.13.13 is the primary tested version (technical range 2.12-2.13).
 ```
 
@@ -154,6 +155,7 @@ Implicit tasks such as `Gathering Facts` may not have original parsed task data.
 | Command | Purpose | Secret masking |
 |---|---|---|
 | `r`, `run` | Execute the current task | Not applicable |
+| `ra`, `run-all` | Execute a dynamic include and all descendants, then resume task stops | Not applicable |
 | `s`, `skip` | Skip the current task | Not applicable |
 | `c`, `continue` | Execute the current task and disable later normal task stops | Not applicable |
 | `g`, `go` | Execute tasks until a configured breakpoint matches | Not applicable |
@@ -177,10 +179,12 @@ Implicit tasks such as `Gathering Facts` may not have original parsed task data.
 | `result! [HOST\|all] [depth=N]` | Display the previous result without masking | Disabled intentionally |
 | `watch add EXPRESSION [host=HOST]` | Add an expression displayed at each stop | Disabled |
 | `watch list`, `watch delete ID` | List or delete expression watches | Not applicable |
+| `tasks [tree] [host=HOST] [regex=REGEXP] [role=NAME] [tag=TAG]` | Browse statically known and runtime-expanded tasks | Not applicable |
+| `break pick TASK_ID` | Add an exact breakpoint for a task-browser entry | Not applicable |
 | `break task REGEX` | Stop `go` when a task name matches the regular expression | Not applicable |
 | `break role NAME`, `break tag TAG` | Stop `go` on an exact role name or tag | Not applicable |
 | `break list`, `break delete ID` | List or delete breakpoints | Not applicable |
-| `args` | Display templated task arguments | Enabled |
+| `a`, `args` | Display templated task arguments | Enabled |
 | `args!` | Display templated task arguments | Disabled intentionally |
 | `raw` | Display original `task.args` | Disabled |
 | `template [HOST]` | Render the current template task and display its resulting content | Disabled intentionally |
@@ -209,6 +213,20 @@ RUN: application : Configure service
 
 `run` is equivalent to `r`. The next executable task opens another prompt while step mode remains enabled.
 
+### Run a dynamic include completely
+
+At an `include_tasks` or `include_role` prompt, use `ra` or `run-all` to execute the dynamic include and its complete descendant tree without intermediate task prompts:
+
+```text
+inspect-step> ra
+
+RUN ALL: application : Load platform tasks
+```
+
+Nested dynamic includes and include loops remain inside the selected scope. Handlers synchronously invoked by `flush_handlers` inside the scope also run without a task prompt. The first executable task outside that include displays `RUN ALL COMPLETE` and opens the normal prompt again. Breakpoints and watches do not stop inside the scope because no normal prompts are opened there; an unhandled failure can still open `inspect-failure>`.
+
+The existing commands retain their meanings at a dynamic include: `s` skips the complete include before it is expanded, while `r` expands it and then stops on every included task. `run-all` is rejected for ordinary tasks and static `import_tasks` or `import_role` statements.
+
 ### Skip the current task
 
 ```text
@@ -218,6 +236,8 @@ SKIP: application : Restart service
 ```
 
 `skip` is equivalent to `s`. For a lockstep task, it skips the task for the current active host group.
+
+The inspector opens one decision prompt for every explicit `ansible.builtin.meta` task, even though ansible-core normally excludes meta actions from `--step`. One decision applies to the complete active lockstep host group: `r` executes the action with its normal Ansible semantics, while `s` skips it for the group. For example, skipping `end_play` proceeds to the next task, while running it ends the play. Implicit `noop`, `flush_handlers`, and `role_complete` tasks created by Ansible remain hidden and execute normally.
 
 ### Continue without normal task stops
 
@@ -230,6 +250,24 @@ RUN: application : Configure service
 `continue` is equivalent to `c`. The current task runs, and the rest of the play proceeds without normal task-inspection stops. A post-failure prompt can still appear for an unhandled failure so the operator can decide whether affected hosts should continue.
 
 ### Run to a breakpoint
+
+First browse tasks when names, roles, or include structure are not known in advance:
+
+```text
+tasks
+tasks tree
+tasks tree host=web02 role=application
+tasks regex='(?i)configure|restart'
+tasks tag=deployment
+break pick 12
+go
+```
+
+`tasks` assigns numeric IDs stable within the current play and displays `CURRENT`, `REACHED`, or `PENDING` for the selected inspection host. `REACHED` means that the iterator reached the task, including a task skipped in the inspector; it does not mean successful execution. `host=HOST` selects this status view but cannot predict future `when` conditions or host-dependent dynamic includes. The tree form preserves compiled role and include nesting. A filtered tree keeps matching tasks plus their include ancestors so the context remains visible. `regex` uses Python substring search; `role` and `tag` are exact and case-sensitive.
+
+Static imports and roles are compiled before strategy execution, so their descendants are visible immediately. Their synthetic import group is marked `static import; group only` and cannot receive a breakpoint because no runtime stop exists at that node. Dynamic `include_tasks` and `include_role` nodes are marked `dynamic; not expanded`; their descendants are added to the same tree after Ansible expands them. Until then, those runtime task IDs do not exist.
+
+`break pick TASK_ID` binds to the selected task's internal runtime UUID instead of its display name. This distinguishes duplicate names and is the safest way to target one concrete task. Task IDs and picked breakpoints apply to the current play.
 
 Define one or more breakpoints, then use `g` or `go`:
 
@@ -513,7 +551,7 @@ This command does not mask secrets.
 
 ### Templated arguments
 
-`args` templates the arguments using variables for the default inspection host:
+`args`, or its short alias `a`, templates the arguments using variables for the default inspection host:
 
 ```text
 inspect-step> args
@@ -521,6 +559,8 @@ inspect-step> args
 ```
 
 Common secret keys are masked recursively. Use `args!` to disable masking explicitly.
+
+The alias `a` is available at the ordinary `inspect-step>` prompt. At `inspect-failure>`, `a` keeps its separate meaning: abort and preserve the Ansible failure.
 
 Argument inspection is diagnostic only. It uses normal Ansible templating, so a lookup embedded in the task arguments can execute on the controller during preview and again when the task runs. The Ansible task executor performs the authoritative templating and validation.
 
@@ -1058,7 +1098,8 @@ If `template-save` reports that the local file already exists, choose a new path
 - Loop preview and item-aware commands do not provide per-item execution, skipping, retries, or result registration.
 - A lockstep task produces one prompt for its active host group.
 - `when` preview is diagnostic; the executor evaluates the condition again after `run`, so mutable state or lookups can produce a different decision.
-- Internal `meta` and `noop` tasks follow Ansible's normal step behavior and may not open a prompt.
+- Every explicit meta task opens one inspector prompt for its active lockstep host group; implicit meta and noop lifecycle tasks created by Ansible do not open a prompt.
+- `run-all` is limited to dynamic `include_tasks` and `include_role`; static imports are expanded before strategy execution and cannot open an import-level prompt.
 - Source rendering normalizes YAML and omits source comments.
 - `set` changes only top-level variables and is not persistent.
 - Inspection commands, watches, and breakpoint management are available at ordinary pre-task `inspect-step>` prompts, not at the post-failure decision prompt.
@@ -1296,6 +1337,7 @@ Therefore, `break task *application*` is invalid, `break task .*application.*` i
 
 ```text
 raw
+a
 args
 args!
 template

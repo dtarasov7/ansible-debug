@@ -4,6 +4,21 @@
 
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), а проект использует [семантическое версионирование](https://semver.org/lang/ru/).
 
+## [Не выпущено]
+
+## [1.1.0] - 2026-08-24
+
+### Добавлено
+
+- Добавлены `ra`/`run-all` для полного выполнения дерева dynamic `include_tasks` или `include_role` с последующим возвратом обычных остановок task.
+- Добавлен короткий alias `a` для маскированной команды `args` в обычном prompt task.
+- Добавлен плоский и древовидный просмотр tasks с фильтрами по host, regexp, role и tag; runtime-потомки dynamic includes дополняют каталог после раскрытия.
+- Добавлена команда `break pick TASK_ID` для точного breakpoint по UUID, выбранного в task-browser.
+
+### Исправлено
+
+- Каждая явная meta-task теперь открывает один prompt inspector для своей активной lockstep-группы hosts и может быть пропущена без влияния на неявные lifecycle-tasks Ansible.
+
 ## [1.0.0] - 2026-08-21
 
 ### Добавлено

@@ -4,7 +4,7 @@
 
 `inspect_step` is an interactive strategy plugin for debugging Ansible playbooks and roles before each task is executed. It extends Ansible's `linear` strategy.
 
-Current version: **1.0.0**.
+Current version: **1.1.0**.
 
 Technical compatibility: **ansible-core 2.12–2.13**.  
 Primary tested version: **ansible-core 2.13.13**.
@@ -13,6 +13,9 @@ Primary tested version: **ansible-core 2.13.13**.
 
 - display the current task source before deciding whether to run it;
 - run, skip, or continue without further normal task stops;
+- run a dynamic `include_tasks` or `include_role` completely, then resume task stops;
+- control explicit meta actions without exposing Ansible's implicit lifecycle tasks;
+- browse a flat or include-aware task tree and select an exact task breakpoint by ID;
 - run to task-name, role, or tag breakpoints with `go`;
 - inspect variables, nested paths, patterns, host-specific values, and task arguments;
 - evaluate `when` conditions before execution and compare Jinja results across task hosts;
@@ -63,12 +66,13 @@ Run the playbook with `--step`:
 ansible-playbook -i inventory playbook.yml --limit web01 --step
 ```
 
-At startup, the plugin prints `inspect_step version 1.0.0` and the Ansible compatibility status. Before each executable task it displays the task definition and opens the `inspect-step>` prompt.
+At startup, the plugin prints `inspect_step version 1.1.0` and the Ansible compatibility status. Before each executable task it displays the task definition and opens the `inspect-step>` prompt.
 
 ## Essential commands
 
 ```text
 r | run                         run the current task
+ra | run-all                    run a dynamic include completely, then resume stops
 s | skip                        skip the current task
 c | continue                    run and disable normal task stops
 g | go                          run until a configured breakpoint
@@ -89,8 +93,10 @@ loop when|args|template ITEM [host=HOST]
                                 inspect one loop item without executing it
 result [HOST|all] [depth=N]     inspect the previous result
 watch add JINJA [host=HOST]     add an expression watch
+tasks [tree] [FILTERS]          browse tasks and include hierarchy
+break pick TASK_ID              add an exact breakpoint from the task browser
 break task REGEX                add a task-name breakpoint
-args                            display templated task arguments
+a | args                        display templated task arguments
 raw                             display original task arguments
 template [HOST]                 preview a rendered template
 template-save FILE [HOST]       save a rendered template locally
@@ -98,6 +104,8 @@ h | help | ?                    display command help
 ```
 
 `vars` is the primary command name and `v` is its complete short alias. `SELECTOR` may be an exact name, a dotted path, a glob, or an explicit regular expression such as `regex=^role_.*$`. Optional `host=HOST` and `depth=N` parameters work identically with both names. The `!` suffix explicitly disables masking.
+
+`tasks` lists the statically known play tasks with IDs stable within the current play; `tasks tree` also shows role and include nesting. Filters are `host=HOST`, `regex=REGEXP`, `role=NAME`, and `tag=TAG`. Dynamic `include_tasks` and `include_role` children appear after Ansible expands them at runtime. Use `break pick TASK_ID` to create an exact UUID-based breakpoint for a listed executable task.
 
 After an unhandled task failure, `inspect-failure>` offers `i | ignore` to continue with the current step setting, `c | continue` to continue without normal task stops, or `a | abort` to preserve standard Ansible failure behavior.
 

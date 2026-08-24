@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.1.0] - 2026-08-24
+
+### Added
+
+- Added `ra`/`run-all` to execute a dynamic `include_tasks` or `include_role` tree completely and resume normal task stops afterward.
+- Added `a` as a short alias for the masked `args` command at the ordinary task prompt.
+- Added flat and tree task browsing with host, regular-expression, role, and tag filters; runtime-expanded dynamic include children are appended to the catalog.
+- Added `break pick TASK_ID` for exact UUID-based breakpoints selected from the task browser.
+
+### Fixed
+
+- Every explicit meta task now opens one inspector prompt for its active lockstep host group and can be skipped without affecting Ansible's implicit lifecycle tasks.
+
 ## [1.0.0] - 2026-08-21
 
 ### Added

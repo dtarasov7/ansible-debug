@@ -26,11 +26,13 @@ else:
     if hasattr(_readline, 'set_auto_history'):
         _readline.set_auto_history(True)
 
+from ansible import constants as C
 from ansible.errors import AnsibleError
 from ansible.executor.module_common import get_action_args_with_defaults
 from ansible.module_utils._text import to_bytes, to_text
 from ansible.module_utils.parsing.convert_bool import boolean
 from ansible.parsing.yaml.dumper import AnsibleDumper
+from ansible.playbook.block import Block
 from ansible.playbook.conditional import Conditional
 from ansible.plugins.loader import lookup_loader
 from ansible.plugins.strategy.linear import StrategyModule as LinearStrategy
@@ -50,6 +52,8 @@ DOCUMENTATION = r'''
       - Previews host-specific loop items and loop-control metadata without task execution.
       - Evaluates expressions, conditions, arguments, and templates for one loop item.
       - Previews built-in template results without writing the remote destination.
+      - Executes dynamic include trees without intermediate task stops when requested.
+      - Browses compiled and runtime-expanded tasks and selects exact task breakpoints.
     author: Custom
     notes:
       - Technical compatibility is ansible-core 2.12-2.13.
@@ -60,7 +64,7 @@ DOCUMENTATION = r'''
 
 HIDDEN_VALUE = '*** HIDDEN ***'
 PATH_UNDEFINED = object()
-VERSION = '1.0.0'
+VERSION = '1.1.0'
 PRIMARY_TESTED_ANSIBLE_VERSION = '2.13.13'
 MINIMUM_ANSIBLE_VERSION = (2, 12)
 MAXIMUM_ANSIBLE_VERSION = (2, 14)
@@ -83,6 +87,7 @@ SECRET_KEY_PARTS = (
 HELP_TEXT = '''Commands:
 
   r | run              execute task
+  ra | run-all         execute a dynamic include completely, then resume stops
   s | skip             skip task
   c | continue         execute task and disable normal task stops
   g | go               execute tasks until a breakpoint matches
@@ -119,11 +124,14 @@ HELP_TEXT = '''Commands:
   watch add EXPRESSION [host=HOST]
   watch list | watch delete ID
                         manage expressions shown at every interactive stop
+  tasks [tree] [host=HOST] [regex=REGEXP] [role=NAME] [tag=TAG]
+                        browse reachable tasks; dynamic children appear at runtime
   break task REGEX | break role NAME | break tag TAG
+  break pick TASK_ID
   break list | break delete ID
                         manage breakpoints used by go
 
-  args                 show templated task arguments
+  a | args             show templated task arguments
   args!                show templated args without masking
   raw                  show original task.args
   template [HOST]      render template task and show resulting content
@@ -349,6 +357,7 @@ class StrategyModule(LinearStrategy):
         self._inspect_hosts_by_task = {}
         self._inspect_host_states = {}
         self._inspect_failure_actions = {}
+        self._inspect_meta_decisions = {}
         self._inspect_failure_prompt_enabled = self._step
         self._inspect_task_var_refresh = set()
         self._inspect_last_result = None
@@ -356,7 +365,15 @@ class StrategyModule(LinearStrategy):
         self._inspect_next_watch_id = 1
         self._inspect_breakpoints = []
         self._inspect_next_breakpoint_id = 1
+        self._inspect_task_catalog = {}
+        self._inspect_task_catalog_by_id = {}
+        self._inspect_next_task_catalog_id = 1
+        self._inspect_task_catalog_initialized = False
+        self._inspect_task_catalog_play_name = None
+        self._inspect_task_catalog_gather_facts = None
         self._inspect_go = False
+        self._inspect_run_all_include = None
+        self._inspect_run_all_flushing_handlers = False
 
     def _check_ansible_version(self):
         """Report compatibility and reject known-incompatible ansible-core versions.
@@ -427,11 +444,13 @@ class StrategyModule(LinearStrategy):
             list: ``(host, task)`` pairs returned by the linear strategy. /
                 Пары ``(host, task)`` из linear strategy.
         """
+        self._ensure_task_catalog(iterator)
         host_tasks = super(StrategyModule, self)._get_next_task_lockstep(hosts, iterator)
         hosts_by_task = {}
         for host, task in host_tasks:
             if task is not None:
                 hosts_by_task.setdefault(task._uuid, []).append(host)
+                self._record_task_catalog(task, host=host, runtime=True)
         self._inspect_hosts_by_task = hosts_by_task
         # EN: Result processing removes failed hosts; snapshots make explicit recovery possible.
         # RU: Result processing удаляет failed hosts; snapshots позволяют явно восстановить их.
@@ -441,7 +460,389 @@ class StrategyModule(LinearStrategy):
             if task is not None
         }
         self._inspect_failure_actions = {}
+        self._inspect_meta_decisions = {}
         return host_tasks
+
+    def _execute_meta(self, task, play_context, iterator, target_host):
+        """Offer one lockstep decision before an explicit meta action.
+
+        RU: Даёт одно lockstep-решение перед явной meta-action.
+
+        Args / Параметры:
+            task (Task): Meta task selected by the linear strategy. /
+                Meta-task, выбранная linear strategy.
+            play_context (PlayContext): Current execution context. / Контекст выполнения.
+            iterator (PlayIterator): Active play iterator. / Активный iterator play.
+            target_host (Host): Host selected to execute the meta action. /
+                Host, выбранный для выполнения meta-action.
+
+        Returns / Возвращает:
+            list: Parent meta results, or an empty list when the operator skips the action. /
+                Results родителя либо пустой list при пропуске action оператором.
+        """
+        if self._step and not task.implicit:
+            decision = self._inspect_meta_decisions.get(task._uuid)
+            if decision is None:
+                decision = self._take_step(task)
+                self._inspect_meta_decisions[task._uuid] = decision
+            if not decision:
+                return []
+
+        run_all_flush = (
+            self._inspect_run_all_include is not None
+            and task.args.get('_raw_params') == 'flush_handlers'
+            and self._is_within_include(
+                task,
+                self._inspect_run_all_include['uuid'],
+            )
+        )
+        self._inspect_run_all_flushing_handlers = run_all_flush
+        try:
+            return super(StrategyModule, self)._execute_meta(
+                task,
+                play_context,
+                iterator,
+                target_host,
+            )
+        finally:
+            self._inspect_run_all_flushing_handlers = False
+
+    def _is_dynamic_include(self, task):
+        """Return whether a task is a runtime ``include_tasks`` or ``include_role``.
+
+        RU: Проверяет, является ли task runtime-действием ``include_tasks`` или
+        ``include_role``.
+
+        Args / Параметры:
+            task (Task): Candidate task. / Проверяемая task.
+
+        Returns / Возвращает:
+            bool: Whether the task is a supported dynamic include. /
+                Является ли task поддерживаемым dynamic include.
+        """
+        return (
+            task.action in C._ACTION_INCLUDE_TASKS
+            or task.action in C._ACTION_INCLUDE_ROLE
+        )
+
+    def _is_within_include(self, task, include_uuid):
+        """Return whether a task belongs to a selected dynamic include tree.
+
+        RU: Проверяет принадлежность task выбранному дереву dynamic include.
+
+        Args / Параметры:
+            task (Task): Candidate descendant task. / Проверяемая task-потомок.
+            include_uuid (str): UUID of the selected include. / UUID выбранного include.
+
+        Returns / Возвращает:
+            bool: Whether the parent chain contains the include. /
+                Содержит ли parent chain выбранный include.
+        """
+        current = task
+        visited = set()
+        while current is not None and id(current) not in visited:
+            visited.add(id(current))
+            if getattr(current, '_uuid', None) == include_uuid:
+                return True
+            current = getattr(current, '_parent', None)
+        return False
+
+    def _task_parent_includes(self, task):
+        """Return parent include/import tasks from outermost to nearest."""
+        include_actions = set(C._ACTION_ALL_INCLUDE_IMPORT_TASKS)
+        include_actions.update(C._ACTION_ALL_PROPER_INCLUDE_IMPORT_ROLES)
+        parents = []
+        current = getattr(task, '_parent', None)
+        visited = set()
+        while current is not None and id(current) not in visited:
+            visited.add(id(current))
+            if getattr(current, 'action', None) in include_actions:
+                parents.append(current)
+            current = getattr(current, '_parent', None)
+        parents.reverse()
+        return parents
+
+    def _task_role_names(self, task):
+        """Return both FQCN and short role names attached to a task."""
+        role = getattr(task, '_role', None)
+        if role is None:
+            return set()
+        names = set()
+        for include_fqcn in (True, False):
+            try:
+                name = role.get_name(include_role_fqcn=include_fqcn)
+            except TypeError:
+                name = role.get_name()
+            if name:
+                names.add(to_text(name))
+        return names
+
+    def _record_task_catalog_entry(
+        self,
+        task,
+        parent_uuid=None,
+        host=None,
+        runtime=False,
+    ):
+        """Add or refresh one real or synthetic task catalog entry."""
+        task_uuid = getattr(task, '_uuid', None)
+        if task_uuid is None or getattr(task, 'implicit', False):
+            return None
+
+        action = to_text(getattr(task, 'action', '') or '')
+        if (
+            action == 'gather_facts'
+            and not runtime
+            and self._inspect_task_catalog_gather_facts is False
+        ):
+            return None
+        static_import = bool(getattr(task, 'statically_loaded', False)) or (
+            action in C._ACTION_IMPORT_TASKS or action in C._ACTION_IMPORT_ROLE
+        )
+        dynamic_include = self._is_dynamic_include(task)
+        entry = self._inspect_task_catalog.get(task_uuid)
+        if entry is None:
+            role_names = self._task_role_names(task)
+            role_name = min(role_names, key=len) if role_names else None
+            entry = {
+                'id': self._inspect_next_task_catalog_id,
+                'uuid': task_uuid,
+                'name': to_text(task.get_name()),
+                'action': action,
+                'role': role_name,
+                'role_names': role_names,
+                'tags': set(to_text(tag) for tag in (getattr(task, 'tags', None) or [])),
+                'path': to_text(task.get_path() or 'unknown source'),
+                'parent_uuid': parent_uuid,
+                'dynamic': dynamic_include,
+                'static_import': static_import,
+                'handler': hasattr(task, 'notified_hosts'),
+                'selectable': not static_import,
+                'runtime': bool(runtime),
+                'seen_hosts': set(),
+            }
+            self._inspect_next_task_catalog_id += 1
+            self._inspect_task_catalog[task_uuid] = entry
+            self._inspect_task_catalog_by_id[entry['id']] = entry
+        else:
+            if entry['parent_uuid'] is None and parent_uuid is not None:
+                entry['parent_uuid'] = parent_uuid
+            entry['runtime'] = entry['runtime'] or bool(runtime)
+            entry['handler'] = entry['handler'] or hasattr(task, 'notified_hosts')
+
+        if host is not None:
+            entry['seen_hosts'].add(host.get_name())
+        return entry
+
+    def _record_task_catalog(self, task, host=None, runtime=False):
+        """Record a task and include/import context missing from the compiled list."""
+        parent_uuid = None
+        for parent in self._task_parent_includes(task):
+            parent_entry = self._record_task_catalog_entry(
+                parent,
+                parent_uuid=parent_uuid,
+                host=host,
+                runtime=runtime,
+            )
+            if parent_entry is not None:
+                parent_uuid = parent_entry['uuid']
+        return self._record_task_catalog_entry(
+            task,
+            parent_uuid=parent_uuid,
+            host=host,
+            runtime=runtime,
+        )
+
+    def _walk_catalog_blocks(self, value):
+        """Record tasks recursively from Ansible's compiled Block structures."""
+        if isinstance(value, Block):
+            for section in ('block', 'rescue', 'always'):
+                self._walk_catalog_blocks(getattr(value, section, []))
+            return
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                self._walk_catalog_blocks(item)
+            return
+        if getattr(value, 'action', None) is not None:
+            self._record_task_catalog(value)
+
+    def _ensure_task_catalog(self, iterator):
+        """Preload statically known tasks once; runtime includes extend this catalog."""
+        if self._inspect_task_catalog_initialized:
+            return
+        self._inspect_task_catalog_initialized = True
+        play = getattr(iterator, '_play', None)
+        if play is not None:
+            self._inspect_task_catalog_gather_facts = getattr(play, 'gather_facts', None)
+            try:
+                self._inspect_task_catalog_play_name = to_text(play.get_name())
+            except AttributeError:
+                self._inspect_task_catalog_play_name = to_text(getattr(play, 'name', ''))
+        self._walk_catalog_blocks(getattr(iterator, '_blocks', []))
+        self._walk_catalog_blocks(getattr(play, 'handlers', []) if play is not None else [])
+
+    def _parse_tasks_command(self, response):
+        """Parse task-browser layout and filters."""
+        try:
+            parts = shlex.split(response)
+        except ValueError as exc:
+            raise ValueError('cannot parse command: %s' % to_text(exc))
+        if not parts or parts[0].lower() != 'tasks':
+            raise ValueError('tasks command is required')
+
+        options = {'tree': False, 'host': None, 'regex': None, 'role': None, 'tag': None}
+        for part in parts[1:]:
+            if part.lower() == 'tree':
+                if options['tree']:
+                    raise ValueError('tree is specified more than once')
+                options['tree'] = True
+                continue
+            if '=' not in part:
+                raise ValueError("unknown option '%s'" % part)
+            key, value = part.split('=', 1)
+            key = key.lower()
+            if key not in ('host', 'regex', 'role', 'tag'):
+                raise ValueError("unknown option '%s'" % key)
+            if options[key] is not None:
+                raise ValueError("option '%s' is specified more than once" % key)
+            if not value:
+                raise ValueError("option '%s' must not be empty" % key)
+            options[key] = value
+        if options['regex'] is not None:
+            try:
+                options['compiled_regex'] = re.compile(options['regex'])
+            except re.error as exc:
+                raise ValueError('invalid task regexp: %s' % to_text(exc))
+        else:
+            options['compiled_regex'] = None
+        return options
+
+    def _task_catalog_matches(self, entry, options):
+        """Return whether one catalog entry passes all requested filters."""
+        if (
+            options['compiled_regex'] is not None
+            and options['compiled_regex'].search(entry['name']) is None
+        ):
+            return False
+        if options['role'] is not None and options['role'] not in entry['role_names']:
+            return False
+        if options['tag'] is not None and options['tag'] not in entry['tags']:
+            return False
+        return True
+
+    def _task_catalog_status(self, entry, current_uuid, host_name):
+        if entry['uuid'] == current_uuid:
+            return 'CURRENT'
+        if host_name is None:
+            return 'REACHED' if entry['seen_hosts'] else 'PENDING'
+        return 'REACHED' if host_name in entry['seen_hosts'] else 'PENDING'
+
+    def _task_catalog_markers(self, entry, has_children):
+        markers = ['action=%s' % entry['action']]
+        if entry['dynamic']:
+            markers.append('dynamic')
+            if not has_children:
+                markers.append('not expanded')
+        if entry['static_import']:
+            markers.extend(('static import', 'group only'))
+        if entry['handler']:
+            markers.append('handler')
+        if entry['role']:
+            markers.append('role=%s' % entry['role'])
+        if entry['tags']:
+            markers.append('tags=%s' % ','.join(sorted(entry['tags'])))
+        return '; '.join(markers)
+
+    def _show_task_catalog(self, task, inspect_host, options):
+        """Display a flat or include-aware view of reachable tasks."""
+        selected_host = self._resolve_inspection_host(options['host'], inspect_host)
+        if options['host'] is not None and selected_host is None:
+            return
+        host_name = selected_host.get_name() if selected_host is not None else None
+        entries = sorted(self._inspect_task_catalog.values(), key=lambda item: item['id'])
+        matched = [entry for entry in entries if self._task_catalog_matches(entry, options)]
+        if not matched:
+            self._display.display('No tasks match the selected filters')
+            return
+
+        current_uuid = getattr(task, '_uuid', None)
+        current_host_names = set(
+            current_host.get_name()
+            for current_host in self._inspect_hosts_by_task.get(current_uuid, [])
+        )
+        if host_name is not None and host_name not in current_host_names:
+            current_uuid = None
+        host_label = host_name or '<all hosts>'
+        self._display.display(
+            '\nTASKS [%s; %d matched]' % (host_label, len(matched))
+        )
+        self._display.display(
+            'PLAY: %s' % (self._inspect_task_catalog_play_name or '<unknown>')
+        )
+
+        children = {}
+        for entry in entries:
+            children.setdefault(entry['parent_uuid'], []).append(entry)
+
+        if not options['tree']:
+            for entry in matched:
+                marker = self._task_catalog_markers(
+                    entry,
+                    bool(children.get(entry['uuid'])),
+                )
+                self._display.display(
+                    '  [%03d] %-7s %s | %s | %s'
+                    % (
+                        entry['id'],
+                        self._task_catalog_status(entry, current_uuid, host_name),
+                        entry['name'],
+                        marker,
+                        entry['path'],
+                    )
+                )
+            return
+
+        visible_uuids = set(entry['uuid'] for entry in matched)
+        by_uuid = dict((entry['uuid'], entry) for entry in entries)
+        for entry in matched:
+            parent_uuid = entry['parent_uuid']
+            while parent_uuid in by_uuid:
+                visible_uuids.add(parent_uuid)
+                parent_uuid = by_uuid[parent_uuid]['parent_uuid']
+
+        def display_entry(entry, depth):
+            visible_children = [
+                child
+                for child in children.get(entry['uuid'], [])
+                if child['uuid'] in visible_uuids
+            ]
+            marker = self._task_catalog_markers(
+                entry,
+                bool(children.get(entry['uuid'])),
+            )
+            self._display.display(
+                '%s[%03d] %-7s %s | %s | %s'
+                % (
+                    '  ' * depth,
+                    entry['id'],
+                    self._task_catalog_status(entry, current_uuid, host_name),
+                    entry['name'],
+                    marker,
+                    entry['path'],
+                )
+            )
+            for child in visible_children:
+                display_entry(child, depth + 1)
+
+        active_role = None
+        for entry in children.get(None, []):
+            if entry['uuid'] not in visible_uuids:
+                continue
+            if entry['role'] != active_role:
+                active_role = entry['role']
+                if active_role:
+                    self._display.display('  ROLE: %s' % active_role)
+            display_entry(entry, 1 if active_role else 0)
 
     def _queue_task(self, host, task, task_vars, play_context):
         """Queue a task with refreshed variables after an inspector ``set`` command.
@@ -630,7 +1031,9 @@ class StrategyModule(LinearStrategy):
             self._tqm._unreachable_hosts
         )
         hosts = [host for host in hosts if host.get_name() not in failed_or_unreachable]
-        if self._step and hosts:
+        for handler_host in hosts:
+            self._record_task_catalog(handler, host=handler_host, runtime=True)
+        if self._step and hosts and not self._inspect_run_all_flushing_handlers:
             self._inspect_hosts_by_task = {handler._uuid: hosts}
             if not self._take_step(handler):
                 handler.notified_hosts = [host for host in handler.notified_hosts if host not in hosts]
@@ -2377,16 +2780,50 @@ class StrategyModule(LinearStrategy):
         self._inspect_breakpoints.append(breakpoint)
         self._display.display('BREAKPOINT #%d added' % breakpoint['id'])
 
+    def _add_task_catalog_breakpoint(self, task_id):
+        """Add an exact UUID breakpoint selected from the visible task catalog."""
+        entry = self._inspect_task_catalog_by_id.get(task_id)
+        if entry is None:
+            raise ValueError("task ID %d is undefined; run 'tasks' first" % task_id)
+        if not entry['selectable']:
+            raise ValueError(
+                'task ID %d is a static import group and has no runtime stop' % task_id
+            )
+        breakpoint = {
+            'id': self._inspect_next_breakpoint_id,
+            'type': 'task-id',
+            'value': entry['name'],
+            'compiled': None,
+            'task_id': task_id,
+            'task_uuid': entry['uuid'],
+        }
+        self._inspect_next_breakpoint_id += 1
+        self._inspect_breakpoints.append(breakpoint)
+        self._display.display(
+            'BREAKPOINT #%d added for task [%03d] %s'
+            % (breakpoint['id'], task_id, entry['name'])
+        )
+
     def _list_breakpoints(self):
         if not self._inspect_breakpoints:
             self._display.display('No breakpoints are defined')
             return
         self._display.display('BREAKPOINTS')
         for breakpoint in self._inspect_breakpoints:
-            self._display.display(
-                '  #%d %s: %s'
-                % (breakpoint['id'], breakpoint['type'], breakpoint['value'])
-            )
+            if breakpoint['type'] == 'task-id':
+                self._display.display(
+                    '  #%d task-id: [%03d] %s'
+                    % (
+                        breakpoint['id'],
+                        breakpoint['task_id'],
+                        breakpoint['value'],
+                    )
+                )
+            else:
+                self._display.display(
+                    '  #%d %s: %s'
+                    % (breakpoint['id'], breakpoint['type'], breakpoint['value'])
+                )
 
     def _delete_breakpoint(self, breakpoint_id):
         for breakpoint in self._inspect_breakpoints:
@@ -2416,7 +2853,12 @@ class StrategyModule(LinearStrategy):
         task_tags = set(to_text(tag) for tag in (task.tags or []))
         task_name = task.get_name()
         for breakpoint in self._inspect_breakpoints:
-            if breakpoint['type'] == 'task' and breakpoint['compiled'].search(task_name):
+            if (
+                breakpoint['type'] == 'task-id'
+                and breakpoint['task_uuid'] == task._uuid
+            ):
+                matches.append(breakpoint)
+            elif breakpoint['type'] == 'task' and breakpoint['compiled'].search(task_name):
                 matches.append(breakpoint)
             elif breakpoint['type'] == 'role' and breakpoint['value'] in role_names:
                 matches.append(breakpoint)
@@ -2475,6 +2917,15 @@ class StrategyModule(LinearStrategy):
             EOF safely skips the task; command errors stay in the same prompt. /
                 EOF безопасно пропускает task; ошибки команд не закрывают prompt.
         """
+        if self._inspect_run_all_include is not None:
+            include_scope = self._inspect_run_all_include
+            if self._is_within_include(task, include_scope['uuid']):
+                return True
+            self._inspect_run_all_include = None
+            self._display.display(
+                '\nRUN ALL COMPLETE: %s' % include_scope['name']
+            )
+
         if self._inspect_go:
             matching_breakpoints = self._matching_breakpoints(task)
             if not matching_breakpoints:
@@ -2520,6 +2971,18 @@ class StrategyModule(LinearStrategy):
             verb = parts[0].lower() if parts else ''
             if command in ('r', 'run'):
                 self._display.display('\nRUN: %s' % task.get_name())
+                return True
+            if command in ('ra', 'run-all'):
+                if not self._is_dynamic_include(task):
+                    self._display.display(
+                        'run-all is available only for include_tasks and include_role'
+                    )
+                    continue
+                self._inspect_run_all_include = {
+                    'uuid': task._uuid,
+                    'name': task.get_name(),
+                }
+                self._display.display('\nRUN ALL: %s' % task.get_name())
                 return True
             if command in ('s', 'skip'):
                 self._display.display('\nSKIP: %s' % task.get_name())
@@ -2712,6 +3175,18 @@ class StrategyModule(LinearStrategy):
                     'watch list | watch delete ID'
                 )
                 continue
+            if verb == 'tasks':
+                try:
+                    task_options = self._parse_tasks_command(response)
+                except ValueError as exc:
+                    self._display.display('Invalid tasks command: %s' % to_text(exc))
+                    self._display.display(
+                        'Usage: tasks [tree] [host=HOST] [regex=REGEXP] '
+                        '[role=NAME] [tag=TAG]'
+                    )
+                else:
+                    self._show_task_catalog(task, inspect_host, task_options)
+                continue
             if verb == 'break':
                 if len(parts) == 2 and parts[1].lower() == 'list':
                     self._list_breakpoints()
@@ -2723,6 +3198,15 @@ class StrategyModule(LinearStrategy):
                         self._display.display('Breakpoint ID must be an integer')
                     else:
                         self._delete_breakpoint(breakpoint_id)
+                    continue
+                if len(parts) == 3 and parts[1].lower() == 'pick':
+                    try:
+                        task_id = int(parts[2])
+                        self._add_task_catalog_breakpoint(task_id)
+                    except ValueError as exc:
+                        self._display.display(
+                            'Invalid task breakpoint: %s' % to_text(exc)
+                        )
                     continue
                 if len(parts) >= 3 and parts[1].lower() in ('task', 'role', 'tag'):
                     try:
@@ -2736,8 +3220,8 @@ class StrategyModule(LinearStrategy):
                         )
                     continue
                 self._display.display(
-                    'Usage: break task REGEX | break role NAME | break tag TAG | '
-                    'break list | break delete ID'
+                    'Usage: break pick TASK_ID | break task REGEX | break role NAME | '
+                    'break tag TAG | break list | break delete ID'
                 )
                 continue
             if verb in ('vars', 'vars!', 'v', 'v!'):
@@ -2795,7 +3279,7 @@ class StrategyModule(LinearStrategy):
                         task_vars_by_host,
                     )
                 continue
-            if command in ('args', 'args!'):
+            if command in ('a', 'args', 'args!'):
                 self._show_args(task, task_vars, reveal_secrets=command.endswith('!'))
                 continue
 

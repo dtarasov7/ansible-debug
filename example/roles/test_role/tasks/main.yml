@@ -3,6 +3,8 @@
   ansible.builtin.set_fact:
     app_port: "{{ host_app_port }}"
 
+- meta: end_play
+
 - name: Register command result and notify handler - вторая задача
   ansible.builtin.command: /bin/true
   register: role_probe
