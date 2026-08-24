@@ -1,0 +1,3 @@
+[test]
+test01 ansible_connection=local host_app_port=8081 host_color=blue host_loop_items='["one",{"name":"two","api_token":"test01-token"}]'
+test02 ansible_connection=local host_app_port=8082 host_color=green host_loop_items='["alpha",{"name":"beta","api_token":"test02-token"},"gamma"]'

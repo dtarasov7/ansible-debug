@@ -1,0 +1,75 @@
+@startuml
+title Variable Inspection and Runtime Update Flow
+
+left to right direction
+skinparam componentStyle rectangle
+skinparam shadowing false
+
+package "Ansible Variable Sources" {
+  database "Role defaults and vars" as RoleVars
+  database "Inventory, group_vars, host_vars" as InventoryVars
+  database "Play and task vars" as PlayVars
+  database "Facts, set_fact, register" as Facts
+  database "Extra and magic vars" as ExtraVars
+}
+
+component "VariableManager\nAnsible precedence" as Manager
+component "Host-specific\ntask_vars" as TaskVars
+
+package "Read Path" {
+  component "vars / v (shared parser)\nargs / result" as ReadCommands
+  component "eval / eval-all / watch" as EvalCommand
+  component "eval-lookup\n(one selected host)" as EvalLookupCommand
+  component "when evaluator" as WhenCommand
+  component "loop / loop!" as LoopCommand
+  component "Loop templating and lookups" as LoopEvaluator
+  component "Templar\nlookups disabled" as EvalTemplar
+  component "Templar\nlookups enabled" as LookupTemplar
+  component "Expression / JSON formatter\n(unmasked)" as EvalFormatter
+  component "Name, dot-path, glob,\nor explicit regex= resolver" as Resolver
+  component "JSON decoder and\nbuilt-in normalization" as Normalizer
+  component "Depth limiter" as Depth
+  component "Secret masker" as Masker
+  component "Formatted terminal output" as Display
+}
+
+package "Write Path" {
+  component "set command" as SetCommand
+  component "Shell tokenization and\nsafe YAML/JSON loader" as Parser
+  database "Non-persistent fact cache" as RuntimeCache
+  component "Current task variable refresh" as Refresh
+}
+
+RoleVars --> Manager
+InventoryVars --> Manager
+PlayVars --> Manager
+Facts --> Manager
+ExtraVars --> Manager
+Manager --> TaskVars : get_vars(play, host, task)
+
+TaskVars --> ReadCommands
+TaskVars --> EvalCommand
+TaskVars --> EvalLookupCommand
+TaskVars --> WhenCommand
+TaskVars --> LoopCommand
+ReadCommands --> Resolver : masked by default\n! disables masking
+Resolver --> Normalizer
+EvalCommand --> EvalTemplar
+EvalTemplar --> EvalFormatter : evaluated value
+EvalLookupCommand --> LookupTemplar : explicit warning first
+LookupTemplar --> EvalFormatter : unmasked lookup result
+WhenCommand --> EvalFormatter : RUN / SKIP per host
+LoopCommand --> LoopEvaluator
+LoopEvaluator --> Normalizer : expanded items per host
+EvalFormatter --> Display
+Normalizer --> Depth
+Depth --> Masker
+Masker --> Display
+
+SetCommand --> Parser
+Parser --> RuntimeCache : top-level value per host
+RuntimeCache --> Manager
+Manager --> Refresh : rebuild effective task_vars
+Refresh --> TaskVars
+
+@enduml

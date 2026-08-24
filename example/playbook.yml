@@ -1,0 +1,17 @@
+---
+- name: Inspect step demonstration
+  hosts: test
+  gather_facts: false
+  strategy: inspect_step
+
+  vars:
+    app_root: /tmp
+    var_no_log: True
+    app_password: supersecret
+    app_config:
+      api_token: demo-token
+      workers: 2
+    json_settings: '{"enabled": true, "limits": {"connections": 100}}'
+
+  roles:
+    - test_role

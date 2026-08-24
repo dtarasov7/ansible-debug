@@ -1,0 +1,75 @@
+@startuml
+title Поток просмотра и runtime-изменения переменных
+
+left to right direction
+skinparam componentStyle rectangle
+skinparam shadowing false
+
+package "Источники переменных Ansible" {
+  database "Defaults и vars роли" as RoleVars
+  database "Inventory, group_vars, host_vars" as InventoryVars
+  database "Переменные play и task" as PlayVars
+  database "Facts, set_fact, register" as Facts
+  database "Extra и magic variables" as ExtraVars
+}
+
+component "Менеджер переменных\nprecedence Ansible" as Manager
+component "Зависящие от host\ntask_vars" as TaskVars
+
+package "Путь чтения" {
+  component "vars / v (единый parser)\nargs / result" as ReadCommands
+  component "eval / eval-all / watch" as EvalCommand
+  component "eval-lookup\n(один выбранный host)" as EvalLookupCommand
+  component "Вычислитель when" as WhenCommand
+  component "loop / loop!" as LoopCommand
+  component "Templating и lookups loop" as LoopEvaluator
+  component "Шаблонизатор\nlookups отключены" as EvalTemplar
+  component "Шаблонизатор\nlookups включены" as LookupTemplar
+  component "Форматирование выражения / JSON\n(без маскирования)" as EvalFormatter
+  component "Разрешение имени, dot-path,\nglob или явного regex=" as Resolver
+  component "Декодирование JSON и\nнормализация структур" as Normalizer
+  component "Ограничение глубины" as Depth
+  component "Маскирование секретов" as Masker
+  component "Форматированный вывод в терминал" as Display
+}
+
+package "Путь записи" {
+  component "Команда set" as SetCommand
+  component "Разбор shell-токенов и\nбезопасная загрузка YAML/JSON" as Parser
+  database "Cache непостоянных facts" as RuntimeCache
+  component "Повторная сборка переменных текущей task" as Refresh
+}
+
+RoleVars --> Manager
+InventoryVars --> Manager
+PlayVars --> Manager
+Facts --> Manager
+ExtraVars --> Manager
+Manager --> TaskVars : get_vars(play, host, task)
+
+TaskVars --> ReadCommands
+TaskVars --> EvalCommand
+TaskVars --> EvalLookupCommand
+TaskVars --> WhenCommand
+TaskVars --> LoopCommand
+ReadCommands --> Resolver : masked по умолчанию\n! отключает masking
+Resolver --> Normalizer
+EvalCommand --> EvalTemplar
+EvalTemplar --> EvalFormatter : вычисленное значение
+EvalLookupCommand --> LookupTemplar : сначала явный warning
+LookupTemplar --> EvalFormatter : немаскированный lookup-результат
+WhenCommand --> EvalFormatter : RUN / SKIP для host
+LoopCommand --> LoopEvaluator
+LoopEvaluator --> Normalizer : раскрытые items для host
+EvalFormatter --> Display
+Normalizer --> Depth
+Depth --> Masker
+Masker --> Display
+
+SetCommand --> Parser
+Parser --> RuntimeCache : top-level значение для host
+RuntimeCache --> Manager
+Manager --> Refresh : повторно собирает effective task_vars
+Refresh --> TaskVars
+
+@enduml

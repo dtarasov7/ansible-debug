@@ -1,0 +1,70 @@
+---
+- name: Define runtime variables - перавая задача
+  ansible.builtin.set_fact:
+    app_port: "{{ host_app_port }}"
+
+- name: Register command result and notify handler - вторая задача
+  ansible.builtin.command: /bin/true
+  register: role_probe
+  changed_when: true
+#  no_log: "{{ var_no_log }}"
+  notify: Report handler invocation
+
+- name: Show variables in templated arguments
+  ansible.builtin.debug:
+    msg:
+      endpoint: "{{ app_root }}/{{ app_name }}:{{ app_port }}"
+      role_default: "{{ role_default_message }}"
+      role_var: "{{ role_var_message }}"
+      registered_rc: "{{ role_probe.rc }}"
+      api_token: "{{ app_config.api_token }}"
+
+- name: Render host-specific application configuration
+  ansible.builtin.template:
+    src: application.conf.j2
+    dest: "{{ app_root }}/{{ app_name }}-{{ inventory_hostname }}.conf"
+    mode: "0640"
+
+- name: Render loop-aware application configuration
+  ansible.builtin.template:
+    src: loop-application.conf.j2
+    dest: "{{ app_root }}/{{ app_name }}-{{ inventory_hostname }}-{{ item }}.conf"
+    mode: "0640"
+  loop:
+    - primary
+    - disabled
+  loop_control:
+    index_var: template_index
+    extended: true
+    label: "{{ item }}"
+  when: item != "disabled"
+
+#- name: xxx
+#  ansible.builtin.file:
+#    xxx: "dd"
+
+- name: Create application directory
+  ansible.builtin.file:
+    path: "{{ app_root }}/{{ app_name }}-{{ inventory_hostname }}"
+    mode: "0750"
+    state: directory
+
+- name: Exercise a loop
+  ansible.builtin.debug:
+    msg: "loop item {{ item }}"
+  loop: "{{ host_loop_items }}"
+  loop_control:
+    index_var: loop_index
+    extended: true
+    label: "{{ item.name | default(item) }}"
+
+- name: Exercise a condition
+  ansible.builtin.debug:
+    msg: "condition evaluated with app_port={{ app_port }}"
+  when: app_port | int >= 8081
+
+- name: Safe task to skip
+  ansible.builtin.debug:
+    msg: This task may be skipped with s
+  tags:
+    - inspect_demo

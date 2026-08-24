@@ -1,0 +1,116 @@
+@startuml
+title Task Inspection and Execution Lifecycle
+
+skinparam shadowing false
+
+actor "Operator" as Operator
+participant "ansible-playbook" as Ansible
+participant "linear strategy" as Linear
+participant "inspect_step" as Inspector
+participant "PlayIterator" as Iterator
+participant "VariableManager" as Variables
+participant "Templar" as Templar
+participant "Task Executor" as Executor
+participant "Managed Host" as Host
+participant "TaskQueueManager" as TQM
+
+Ansible -> Inspector : initialize strategy
+Inspector -> Inspector : check ansible-core version
+alt ansible-core 2.12-2.13
+  Inspector --> Ansible : compatibility status
+else ansible-core older than 2.12
+  Inspector --> Ansible : partial-compatibility warning
+else ansible-core 2.14 or newer
+  Inspector --> Ansible : clear incompatibility error
+end
+
+Ansible -> Linear : process next lockstep group
+Linear -> Variables : get_vars(play, host, task)
+Variables --> Linear : task variables
+Linear -> Inspector : _take_step(task)
+Inspector -> Variables : collect default host context
+Variables --> Inspector : inspection variables
+Inspector -> Templar : evaluate watches (lookups disabled)
+Templar --> Inspector : watch values
+Inspector -> Operator : task source, host context, prompt
+
+loop Zero or more inspection commands
+  Operator -> Inspector : inspection, watch, breakpoint, or execution command
+  Inspector -> Variables : read or update context
+  Variables --> Inspector : effective values
+  opt Composite expression
+    Inspector -> Templar : evaluate Jinja (lookups disabled)
+    Templar --> Inspector : host-specific result
+  end
+  opt Explicit lookup expression
+    Inspector --> Operator : lookup side-effect warning
+    Inspector -> Templar : evaluate once for one host (lookups enabled)
+    Templar --> Inspector : unmasked lookup result
+  end
+  opt Loop preview
+    Inspector -> Templar : expand items per host (normal lookups)
+    Templar --> Inspector : items and loop_control metadata
+    Inspector --> Operator : masked or unmasked item preview
+    opt Selected item diagnostics
+      Inspector -> Templar : evaluate expression, when, args, or template with item variables
+      Templar --> Inspector : diagnostic result without item execution
+    end
+  end
+  opt Template preview
+    Inspector -> Templar : render src for selected host
+    Templar --> Inspector : resulting content
+    Inspector --> Operator : display or save locally
+  end
+  Inspector --> Operator : formatted result and prompt
+end
+
+alt Skip current task
+  Operator -> Inspector : s or skip
+  Inspector --> Linear : false
+  Linear -> Linear : skip task for active host group
+else Run current task
+  Operator -> Inspector : r, run, g, go, c, or continue
+  Inspector --> Linear : true
+  opt Runtime variables changed
+    Linear -> Inspector : _queue_task(host, task, old variables)
+    Inspector -> Variables : refresh variables
+    Variables --> Inspector : updated task variables
+  end
+  Linear -> Executor : queue task with effective variables
+  alt --check and module supports check mode
+    Executor -> Host : inspect state and predict change
+    Host --> Executor : simulated result
+  else --check and module lacks support
+    Executor -> Executor : skip or return partial result
+  else normal run or task check_mode: false
+    Executor -> Host : apply task
+    Host --> Executor : actual result
+  end
+  Executor --> Inspector : process pending task result
+  Inspector -> Inspector : capture result per host
+  alt Unhandled task failure
+    Inspector -> Operator : fatal result and inspect-failure prompt
+    alt Ignore or continue
+      Operator -> Inspector : i, ignore, c, or continue
+      Inspector -> Iterator : restore saved host state
+      Inspector -> TQM : change failure statistics to ignored
+    else Abort
+      Operator -> Inspector : a or abort
+      Inspector -> Iterator : keep failed host state
+    end
+  else Successful or already handled result
+    Inspector -> Variables : store facts and registered results
+  end
+  Inspector --> Linear : processed result
+end
+
+opt Go was selected
+  Inspector -> Inspector : suppress prompts until a breakpoint matches
+  Inspector -> Operator : BREAKPOINT HIT before matching task
+end
+
+opt Continue was selected
+  Inspector -> Inspector : disable subsequent step prompts
+end
+
+@enduml

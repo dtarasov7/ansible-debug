@@ -1,0 +1,56 @@
+@startuml
+title Компонентная архитектура inspect_step
+
+left to right direction
+skinparam componentStyle rectangle
+skinparam shadowing false
+
+actor "Оператор" as Operator
+
+package "Контроллер Ansible" {
+  component "ansible-playbook" as CLI
+  component "Менеджер очереди task" as TQM
+  component "Итератор play" as Iterator
+  component "linear\nStrategyModule" as Linear
+  component "inspect_step\nStrategyModule" as Inspector
+  component "Интерактивный цикл команд" as Prompt
+  component "Состояние watches и breakpoints" as DebugState
+  component "Snapshot последнего результата" as ResultState
+  component "Менеджер переменных" as Variables
+  component "Шаблонизатор" as Templar
+  component "Исполнители task" as Workers
+}
+
+database "Inventory и источники переменных" as Inventory
+artifact "Playbooks, роли и данные task" as Sources
+artifact "Локальный preview template" as Preview
+node "Управляемые hosts" as Hosts
+
+Operator --> CLI : запускает с --step
+Operator <--> Prompt : команды просмотра
+CLI --> TQM : запускает playbook
+TQM --> Iterator : получает состояния hosts и task
+TQM --> Inspector : запускает выбранную стратегию
+Linear <|-- Inspector
+Inspector --> Prompt : контекст task и host
+Inspector --> DebugState : управляет watches, breakpoints и go
+Inspector --> Variables : получает или изменяет переменные
+Inspector --> Templar : подставляет переменные в аргументы (штатные lookups)
+Inspector --> Templar : вычисляет выражение (lookups отключены)
+Inspector --> Templar : явно вычисляет lookup (один host, warning)
+Inspector --> Templar : раскрывает loop items (штатные lookups)
+Templar --> Inspector : возвращает содержимое или значение
+Inspector --> Preview : template-save (mode 0600)
+Inspector --> Workers : ставит подтверждённые task в очередь
+Inventory --> Variables
+Sources --> Iterator
+Sources --> Inspector : разобранное определение task
+Workers --> Hosts : выполняют модули
+Workers --> TQM : результаты task
+TQM --> Inspector : pending results и ошибки
+Inspector --> ResultState : сохраняет результаты hosts
+ResultState --> Prompt : result / result!
+Inspector --> Iterator : восстанавливает явно игнорируемые ошибки
+TQM --> Variables : facts и зарегистрированные результаты
+
+@enduml

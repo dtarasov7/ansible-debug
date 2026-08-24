@@ -1,0 +1,116 @@
+@startuml
+title Жизненный цикл просмотра и выполнения task
+
+skinparam shadowing false
+
+actor "Оператор" as Operator
+participant "ansible-playbook" as Ansible
+participant "Стратегия linear" as Linear
+participant "inspect_step" as Inspector
+participant "Итератор play" as Iterator
+participant "Менеджер переменных" as Variables
+participant "Шаблонизатор" as Templar
+participant "Исполнитель task" as Executor
+participant "Управляемый host" as Host
+participant "Менеджер очереди task" as TQM
+
+Ansible -> Inspector : инициализирует стратегию
+Inspector -> Inspector : проверяет версию ansible-core
+alt ansible-core 2.12-2.13
+  Inspector --> Ansible : статус совместимости
+else ansible-core ниже 2.12
+  Inspector --> Ansible : warning о неполной совместимости
+else ansible-core 2.14 или новее
+  Inspector --> Ansible : понятная ошибка несовместимости
+end
+
+Ansible -> Linear : обрабатывает следующую lockstep-группу
+Linear -> Variables : get_vars(play, host, task)
+Variables --> Linear : переменные task
+Linear -> Inspector : _take_step(task)
+Inspector -> Variables : получает контекст host по умолчанию
+Variables --> Inspector : переменные для просмотра
+Inspector -> Templar : вычисляет watches (lookups отключены)
+Templar --> Inspector : значения watches
+Inspector -> Operator : исходная task, host-контекст и prompt
+
+loop Ноль или несколько команд просмотра
+  Operator -> Inspector : просмотр, watch, breakpoint или команда выполнения
+  Inspector -> Variables : читает или изменяет контекст
+  Variables --> Inspector : эффективные значения
+  opt Составное выражение
+    Inspector -> Templar : вычисляет Jinja (lookups отключены)
+    Templar --> Inspector : результат для выбранного host
+  end
+  opt Явное lookup-выражение
+    Inspector --> Operator : warning о side effects lookup
+    Inspector -> Templar : вычисляет один раз для одного host (lookups включены)
+    Templar --> Inspector : немаскированный lookup-результат
+  end
+  opt Preview loop
+    Inspector -> Templar : раскрывает items для hosts (штатные lookups)
+    Templar --> Inspector : items и metadata loop_control
+    Inspector --> Operator : маскированный или открытый preview
+    opt Диагностика выбранного item
+      Inspector -> Templar : вычисляет expression, when, args или template с item variables
+      Templar --> Inspector : диагностический результат без выполнения item
+    end
+  end
+  opt Preview template
+    Inspector -> Templar : рендерит src для выбранного host
+    Templar --> Inspector : возвращает содержимое
+    Inspector --> Operator : показывает или сохраняет локально
+  end
+  Inspector --> Operator : форматированный результат и prompt
+end
+
+alt Пропуск текущей task
+  Operator -> Inspector : s или skip
+  Inspector --> Linear : false
+  Linear -> Linear : пропускает task для активной группы hosts
+else Выполнение текущей task
+  Operator -> Inspector : r, run, g, go, c или continue
+  Inspector --> Linear : true
+  opt Runtime-переменные были изменены
+    Linear -> Inspector : _queue_task(host, task, старые переменные)
+    Inspector -> Variables : повторно собирает переменные
+    Variables --> Inspector : обновлённые переменные task
+  end
+  Linear -> Executor : ставит task в очередь с эффективными переменными
+  alt --check и модуль поддерживает check mode
+    Executor -> Host : проверяет состояние и прогнозирует изменение
+    Host --> Executor : симулированный результат
+  else --check и модуль не поддерживает режим
+    Executor -> Executor : пропускает task или возвращает неполный result
+  else обычный запуск или task check_mode: false
+    Executor -> Host : применяет task
+    Host --> Executor : фактический результат
+  end
+  Executor --> Inspector : обработка pending-результата task
+  Inspector -> Inspector : сохраняет результат для каждого host
+  alt Необработанная ошибка task
+    Inspector -> Operator : fatal-результат и prompt inspect-failure
+    alt Игнорирование или продолжение
+      Operator -> Inspector : i, ignore, c или continue
+      Inspector -> Iterator : восстанавливает сохранённое состояние host
+      Inspector -> TQM : меняет статистику failure на ignored
+    else Прерывание
+      Operator -> Inspector : a или abort
+      Inspector -> Iterator : сохраняет failed-состояние host
+    end
+  else Успешный или уже обработанный результат
+    Inspector -> Variables : сохраняет facts и зарегистрированные результаты
+  end
+  Inspector --> Linear : обработанный результат
+end
+
+opt Была выбрана команда go
+  Inspector -> Inspector : подавляет prompts до совпадения breakpoint
+  Inspector -> Operator : BREAKPOINT HIT до выполнения совпавшей task
+end
+
+opt Была выбрана команда continue
+  Inspector -> Inspector : отключает последующие step prompts
+end
+
+@enduml

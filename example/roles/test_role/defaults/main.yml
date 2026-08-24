@@ -1,0 +1,4 @@
+---
+app_name: inspect-test
+role_default_message: value from role defaults
+

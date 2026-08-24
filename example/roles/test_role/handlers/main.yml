@@ -1,0 +1,5 @@
+---
+- name: Report handler invocation
+  ansible.builtin.debug:
+    msg: Handler executed for {{ inventory_hostname }}
+

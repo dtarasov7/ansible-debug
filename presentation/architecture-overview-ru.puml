@@ -1,0 +1,44 @@
+@startuml
+title Архитектура inspect_step: точка управления перед task
+
+left to right direction
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam defaultFontSize 17
+skinparam ArrowFontSize 15
+
+actor "Оператор" as Operator
+
+package "Ansible controller" {
+  component "ansible-playbook\n--step" as CLI
+  component "linear\nStrategyModule" as Linear
+  component "inspect_step\nStrategyModule" as Inspector #DDEEFF
+  component "Prompt + состояние\nwatches / breakpoints / result" as Prompt
+  component "VariableManager" as Variables
+  component "Templar" as Templar
+  component "TaskQueueManager\nи штатный executor" as Executor
+}
+
+database "Inventory и\nvariables" as Inventory
+artifact "Playbooks\nи roles" as Sources
+node "Managed hosts" as Hosts
+
+Operator --> CLI : запускает
+CLI --> Inspector : strategy
+Linear <|-- Inspector : наследование
+Sources --> Inspector : task source
+Inventory --> Variables
+Inspector <--> Prompt : команды и ответы
+Inspector --> Variables : inspect / set
+Inspector --> Templar : eval / when / preview
+Inspector --> Executor : подтверждённая task
+Executor --> Hosts : штатное выполнение
+Executor --> Inspector : per-host result / failure
+
+note bottom of Inspector
+  Технический диапазон: ansible-core 2.12–2.13
+  Основная версия: 2.13.13
+  2.14+ → ранний отказ из-за изменения internal API
+end note
+
+@enduml
