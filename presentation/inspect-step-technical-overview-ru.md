@@ -46,7 +46,7 @@ lang: ru-RU
 
 - Показывает source, hosts и runtime variables до выполнения task.
 - Вычисляет expressions, `when`, args и template для выбранного loop item.
-- Управляет run/skip/go/continue, watches, breakpoints и result.
+- Управляет run/run!/skip/go/continue, watches, breakpoints и result.
 - Использует штатные `VariableManager`, `Templar` и executor Ansible.
 :::
 ::: {.column width="50%"}
@@ -78,7 +78,7 @@ lang: ru-RU
 2. `_take_step()` передаёт task в интерактивный inspector.
 3. Inspector получает variables выбранного host и показывает masked source.
 4. Оператор выполняет диагностические команды; task ещё не запущена.
-5. `r`, `s`, `g` или `c` определяют дальнейшее выполнение.
+5. `r`, `r!`, `s`, `g` или `c` определяют дальнейшее выполнение.
 6. Разрешённая task идёт в штатный executor; результаты обрабатываются Ansible.
 7. Inspector сохраняет per-host result и при необработанной ошибке открывает `inspect-failure>`.
 
@@ -86,7 +86,7 @@ lang: ru-RU
 
 # Карта команд
 
-- **Выполнение:** `r/run`, `s/skip`, `c/continue`, `g/go`.
+- **Выполнение:** `r/run`, `r!/run!`, `s/skip`, `c/continue`, `g/go`.
 - **Контекст:** `w`, `hosts`, `h/help/?`.
 - **Variables:** единая `vars/v`, явно немаскированная `vars!/v!`, `set`.
 - **Вычисления:** `e/eval`, `eval-all`, `eval-lookup`, `when`.
@@ -95,7 +95,7 @@ lang: ru-RU
 - **Навигация:** `break task/role/tag`, `break list/delete`.
 - **После failure:** `i/ignore`, `c/continue`, `a/abort`.
 
-Суффикс `!` означает намеренно немаскированный вывод и требует осторожности.
+Суффикс `!` означает намеренно немаскированный вывод и требует осторожности; `r!` временно отключает task-level `no_log`.
 
 # Интерактивная пауза перед выполнением task
 
@@ -129,6 +129,9 @@ SKIP: application : Restart service
 
 inspect-step> r
 RUN: application : Configure service
+
+inspect-step> r!
+# выполнить выбранную task с task-level no_log: false
 
 inspect-step> c
 # выполнить текущую task и убрать обычные последующие остановки
@@ -268,10 +271,10 @@ inspect-failure> i
 # Безопасность и `--check`
 
 - Masking эвристический: он не гарантирует обнаружение всех секретов.
-- `v`, `eval*`, watches, `raw`, команды с `!` и template preview могут раскрыть чувствительные данные.
+- `v`, `eval*`, watches, `raw`, команды с `!` и template preview могут раскрыть чувствительные данные; `r!` также передаёт их callbacks и job logs.
 - `--check` не является sandbox: `check_mode: false`, lookup/action plugins, caches и внешние сервисы могут иметь реальные эффекты.
 - `changed` в check mode — прогноз модуля; неподдерживаемые модули могут skip task или вернуть неполный result.
-- `s` не запускает task; `r`, `g`, `c` сохраняют обычную семантику текущего check mode.
+- `s` не запускает task; `r`, `r!`, `g`, `c` сохраняют обычную семантику текущего check mode.
 - Для production нужны те же права, аудит и ограничения доступа к controller, что и для обычного `ansible-playbook`.
 
 <!--

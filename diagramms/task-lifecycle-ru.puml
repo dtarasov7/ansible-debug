@@ -69,12 +69,16 @@ alt Пропуск текущей task
   Inspector --> Linear : false
   Linear -> Linear : пропускает task для активной группы hosts
 else Выполнение текущей task
-  Operator -> Inspector : r, run, g, go, c или continue
+  Operator -> Inspector : r, run, r!, run!, g, go, c или continue
   Inspector --> Linear : true
   opt Runtime-переменные были изменены
     Linear -> Inspector : _queue_task(host, task, старые переменные)
     Inspector -> Variables : повторно собирает переменные
     Variables --> Inspector : обновлённые переменные task
+  end
+  opt Выбрана r! или run!
+    Linear -> Inspector : _queue_task(host, task с no_log)
+    Inspector -> Inspector : копирует task и задаёт no_log=false
   end
   Linear -> Executor : ставит task в очередь с эффективными переменными
   alt --check и модуль поддерживает check mode

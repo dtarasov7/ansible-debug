@@ -2,7 +2,7 @@
 
 [English](UserGuide.md) | [Русский](UserGuide-ru.md)
 
-This guide describes installation, daily use, variable inspection, runtime variable changes, security considerations, and troubleshooting for `inspect_step` version 1.1.0.
+This guide describes installation, daily use, variable inspection, runtime variable changes, security considerations, and troubleshooting for `inspect_step` version 1.2.0.
 
 ## 1. Purpose
 
@@ -11,6 +11,7 @@ This guide describes installation, daily use, variable inspection, runtime varia
 The plugin is useful when you need to:
 
 - understand which task is about to execute;
+- explicitly inspect the result of one task that normally uses task-level `no_log`;
 - compare variables for multiple hosts selected by `--limit`;
 - inspect facts, role variables, registered results, and `set_fact` values;
 - inspect original and templated task arguments;
@@ -52,7 +53,7 @@ For each lockstep task, the plugin determines the active hosts and chooses the f
 2. prints the task name and host context;
 3. renders the original task definition with common secret keys masked;
 4. evaluates configured watches and opens the `inspect-step>` command loop;
-5. waits for `run`, `skip`, `go`, or `continue`;
+5. waits for `run`, `run!`, `skip`, `go`, or `continue`;
 6. lets the inherited `linear` strategy queue and execute the task;
 7. captures the processed per-host result for inspection at a later prompt.
 
@@ -119,7 +120,7 @@ ansible-playbook -i inventory playbook.yml --limit web --step
 At strategy initialization, the following line is printed once per `ansible-playbook` process:
 
 ```text
-inspect_step version 1.1.0
+inspect_step version 1.2.0
 Ansible compatibility: ansible-core 2.13.13 is the primary tested version (technical range 2.12-2.13).
 ```
 
@@ -155,6 +156,7 @@ Implicit tasks such as `Gathering Facts` may not have original parsed task data.
 | Command | Purpose | Secret masking |
 |---|---|---|
 | `r`, `run` | Execute the current task | Not applicable |
+| `r!`, `run!` | Execute the current task with task-level `no_log` disabled | Disabled intentionally |
 | `ra`, `run-all` | Execute a dynamic include and all descendants, then resume task stops | Not applicable |
 | `s`, `skip` | Skip the current task | Not applicable |
 | `c`, `continue` | Execute the current task and disable later normal task stops | Not applicable |
@@ -212,6 +214,21 @@ RUN: application : Configure service
 ```
 
 `run` is equivalent to `r`. The next executable task opens another prompt while step mode remains enabled.
+
+### Run with task-level `no_log` disabled
+
+```text
+inspect-step> r!
+
+[WARNING]: task-level no_log is disabled for this task; results and secrets may
+be written to stdout and callback logs
+
+RUN (no_log disabled): application : Read protected value
+```
+
+`run!` is equivalent to `r!`. The override applies to every active host and loop item of this selected task. The inspector queues a copy with the same UUID and `no_log: false`; it does not mutate the original task or disable `no_log` for following tasks.
+
+This command bypasses task-level `no_log` only. A module can independently sanitize arguments marked `no_log` in its argument specification, and those values can remain replaced with `VALUE_SPECIFIED_IN_NO_LOG_PARAMETER`. A controller-wide `DEFAULT_NO_LOG` setting is also outside this task-level override. Treat terminal output, callback plugins, job logs, and stored events as secret-bearing after using `r!`.
 
 ### Run a dynamic include completely
 
@@ -329,6 +346,7 @@ Execution commands have the following meaning:
 | Command | Behavior under `--check` |
 |---|---|
 | `r`, `run` | Queue the current task with `ansible_check_mode=True`; a supporting module predicts its result |
+| `r!`, `run!` | Same as `run`, but disable task-level `no_log` for the selected check-mode result |
 | `s`, `skip` | Do not queue the task at all; no prediction or registered result is produced by that task |
 | `c`, `continue` | Queue the current and later tasks in check mode and disable later normal prompts |
 | `g`, `go` | Queue tasks in check mode until a breakpoint matches; the matching task is still stopped before execution |
@@ -360,7 +378,7 @@ The ordinary `inspect-failure>` workflow remains active for failures produced du
 
 ### Continue after a task failure
 
-When a task executed with `r`, `run`, `c`, or `continue` fails and the failure is not already handled by `ignore_errors` or `block`/`rescue`, the plugin displays:
+When a task executed with `r`, `run`, `r!`, `run!`, `c`, or `continue` fails and the failure is not already handled by `ignore_errors` or `block`/`rescue`, the plugin displays:
 
 ```text
 INSPECT FAILURE: application : Configure service
@@ -968,7 +986,7 @@ History exists only in the current `ansible-playbook` process and is not saved b
 9. On an `ansible.builtin.template` task, use `template [HOST]` or `template-save FILE [HOST]` to inspect the resulting file.
 10. If necessary, use `set` and immediately verify the effective value with `v`, `eval`, `args`, `loop`, or `template`.
 11. Use `w` to restore task context after long output.
-12. For a long run, define narrow breakpoints and use `go`; otherwise choose `r`, `s`, or `c`.
+12. For a long run, define narrow breakpoints and use `go`; otherwise choose `r`, `s`, or `c`. Use `r!` only when exposing the selected task result is explicitly required.
 13. If `inspect-failure>` appears, inspect the fatal result and explicitly choose `ignore`, `continue`, or `abort`.
 
 For multiple hosts, run `hosts` first and explicitly add a host to inspection commands whenever host-specific values matter.
@@ -992,6 +1010,7 @@ Commands that mask common secret-key names by default:
 
 Commands that can expose values without masking:
 
+- `r!` and `run!`;
 - `e` and `eval`;
 - `eval-lookup`;
 - `eval-all` and watches;
@@ -1005,7 +1024,7 @@ Commands that can expose values without masking:
 
 `set` does not echo its value in the response, but the original command remains visible on the terminal and in readline history for the current process. Avoid entering production secrets when terminal output or session recording is not trusted.
 
-Ansible `no_log` does not turn the inspector into a complete secret filter. Review task previews and diagnostic commands carefully.
+Ansible `no_log` does not turn the inspector into a complete secret filter. `r!` deliberately disables task-level `no_log` for one selected task and can expose its result through every enabled callback. Module-level argument sanitization and controller-wide `DEFAULT_NO_LOG` are independent and may still hide output. Review task previews and diagnostic commands carefully.
 
 `eval`, `eval-all`, `loop eval`, and watches disable Ansible lookup plugins to prevent their controller-side side effects. Jinja filters and tests, including project-provided extensions, still execute, so use only expressions you trust. `eval-lookup` is the explicit exception: it enables lookup plugins for one command and one host, prints a warning every time, and does not mask the result. `when`, loop preview, templated argument inspection, template preview, `loop when`, `loop args`, and `loop template` use normal Ansible evaluation, so an embedded lookup can run on the controller during preview.
 
@@ -1100,6 +1119,7 @@ If `template-save` reports that the local file already exists, choose a new path
 - `when` preview is diagnostic; the executor evaluates the condition again after `run`, so mutable state or lookups can produce a different decision.
 - Every explicit meta task opens one inspector prompt for its active lockstep host group; implicit meta and noop lifecycle tasks created by Ansible do not open a prompt.
 - `run-all` is limited to dynamic `include_tasks` and `include_role`; static imports are expanded before strategy execution and cannot open an import-level prompt.
+- `r!` disables task-level `no_log` only for the selected task; it cannot reverse sanitization already performed by a module or override controller-wide `DEFAULT_NO_LOG` consistently.
 - Source rendering normalizes YAML and omits source comments.
 - `set` changes only top-level variables and is not persistent.
 - Inspection commands, watches, and breakpoint management are available at ordinary pre-task `inspect-step>` prompts, not at the post-failure decision prompt.
@@ -1176,6 +1196,8 @@ i
 ```text
 r
 run
+r!
+run!
 s
 skip
 c

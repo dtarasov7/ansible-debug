@@ -33,7 +33,7 @@ TQM --> Iterator : получает состояния hosts и task
 TQM --> Inspector : запускает выбранную стратегию
 Linear <|-- Inspector
 Inspector --> Prompt : контекст task и host
-Inspector --> DebugState : управляет watches, breakpoints и go
+Inspector --> DebugState : управляет watches, breakpoints, go и no_log overrides
 Inspector --> Variables : получает или изменяет переменные
 Inspector --> Templar : подставляет переменные в аргументы (штатные lookups)
 Inspector --> Templar : вычисляет выражение (lookups отключены)
@@ -41,7 +41,7 @@ Inspector --> Templar : явно вычисляет lookup (один host, warni
 Inspector --> Templar : раскрывает loop items (штатные lookups)
 Templar --> Inspector : возвращает содержимое или значение
 Inspector --> Preview : template-save (mode 0600)
-Inspector --> Workers : ставит подтверждённые task в очередь
+Inspector --> Workers : ставит task или копии без no_log в очередь
 Inventory --> Variables
 Sources --> Iterator
 Sources --> Inspector : разобранное определение task

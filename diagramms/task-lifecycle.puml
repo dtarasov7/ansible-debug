@@ -69,12 +69,16 @@ alt Skip current task
   Inspector --> Linear : false
   Linear -> Linear : skip task for active host group
 else Run current task
-  Operator -> Inspector : r, run, g, go, c, or continue
+  Operator -> Inspector : r, run, r!, run!, g, go, c, or continue
   Inspector --> Linear : true
   opt Runtime variables changed
     Linear -> Inspector : _queue_task(host, task, old variables)
     Inspector -> Variables : refresh variables
     Variables --> Inspector : updated task variables
+  end
+  opt r! or run! selected
+    Linear -> Inspector : _queue_task(host, task with no_log)
+    Inspector -> Inspector : copy task and set no_log=false
   end
   Linear -> Executor : queue task with effective variables
   alt --check and module supports check mode

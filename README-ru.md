@@ -4,7 +4,7 @@
 
 `inspect_step` — интерактивный strategy plugin для отладки Ansible playbook и ролей до выполнения каждой task. Он расширяет штатную стратегию `linear`.
 
-Текущая версия: **1.1.0**.
+Текущая версия: **1.2.0**.
 
 Техническая совместимость: **ansible-core 2.12–2.13**.  
 Основная протестированная версия: **ansible-core 2.13.13**.
@@ -13,6 +13,7 @@
 
 - вывод исходного определения текущей task до принятия решения о запуске;
 - выполнение, пропуск или продолжение без дальнейших обычных остановок task;
+- явное выполнение одной выбранной task с отключённым task-level `no_log`;
 - полное выполнение dynamic `include_tasks` или `include_role` с возвратом остановок;
 - управление явными meta-actions без показа неявных lifecycle-tasks Ansible;
 - плоский или древовидный просмотр tasks и выбор точного breakpoint по ID;
@@ -66,12 +67,13 @@ strategy_plugins = ./strategy_plugins
 ansible-playbook -i inventory playbook.yml --limit web01 --step
 ```
 
-При запуске плагин выводит `inspect_step version 1.1.0` и статус совместимости с Ansible. Перед каждой исполняемой task он показывает её определение и открывает prompt `inspect-step>`.
+При запуске плагин выводит `inspect_step version 1.2.0` и статус совместимости с Ansible. Перед каждой исполняемой task он показывает её определение и открывает prompt `inspect-step>`.
 
 ## Основные команды
 
 ```text
 r | run                         выполнить текущую task
+r! | run!                       выполнить с отключённым task-level no_log
 ra | run-all                    выполнить dynamic include целиком и вернуть остановки
 s | skip                        пропустить текущую task
 c | continue                    выполнить и отключить обычные остановки task
@@ -107,6 +109,8 @@ h | help | ?                    показать справку
 
 `tasks` показывает статически известные tasks со стабильными в пределах текущего play ID; `tasks tree` дополнительно отображает вложенность roles и includes. Доступны фильтры `host=HOST`, `regex=REGEXP`, `role=NAME` и `tag=TAG`. Потомки dynamic `include_tasks` и `include_role` появляются после их runtime-раскрытия Ansible. Команда `break pick TASK_ID` создаёт точный breakpoint по UUID для выбранной исполняемой task.
 
+`r!` и `run!` выполняют только выбранную task с отключённым task-level `no_log`. Inspector показывает warning, поскольку результаты, аргументы, diffs и секреты могут попасть в stdout и callback logs. Аргументы, независимо помеченные самим модулем как `no_log`, могут остаться замаскированными.
+
 После необработанной ошибки task prompt `inspect-failure>` предлагает `i | ignore` для продолжения с текущим step-режимом, `c | continue` для продолжения без обычных остановок или `a | abort` для сохранения штатного failed-поведения Ansible.
 
 ## Check mode
@@ -117,7 +121,7 @@ h | help | ?                    показать справку
 ansible-playbook -i inventory playbook.yml --limit web01 --check --diff --step
 ```
 
-Prompts и команды остаются доступными. `r`, `c` и `g` ставят tasks в очередь с `ansible_check_mode=True`; `s` вообще не вызывает task. Результат `changed` означает «изменилась бы» только при корректной поддержке check mode модулем. Неподдерживающий его модуль может быть пропущен или вернуть неполные registered data. Check mode не является границей безопасности: `check_mode: false`, controller-side lookups, включая `eval-lookup`, `template-save`, custom plugins, caches и logging всё ещё могут иметь реальные эффекты. Перед использованием `--check` прочитайте подробное руководство.
+Prompts и команды остаются доступными. `r`, `r!`, `c` и `g` ставят tasks в очередь с `ansible_check_mode=True`; `s` вообще не вызывает task. Результат `changed` означает «изменилась бы» только при корректной поддержке check mode модулем. Неподдерживающий его модуль может быть пропущен или вернуть неполные registered data. Check mode не является границей безопасности: `check_mode: false`, controller-side lookups, включая `eval-lookup`, `template-save`, custom plugins, caches и logging всё ещё могут иметь реальные эффекты. Перед использованием `--check` прочитайте подробное руководство.
 
 ## Документация
 
@@ -131,7 +135,7 @@ Prompts и команды остаются доступными. `r`, `c` и `g`
 
 ## Предупреждение о безопасности
 
-Маскирование секретов является эвристическим. Команды `eval`, `eval-lookup`, `eval-all`, watches, `raw`, `vars!`, `v!`, `loop!`, `result!`, `args!` и preview template могут раскрывать чувствительные данные, а значения, введённые через `set`, остаются в readline history текущего процесса. `vars` и его короткий alias `v` маскируют секреты по умолчанию. Для `eval`, `eval-all`, `loop eval` и watches отключены lookup plugins Ansible. `eval-lookup` намеренно включает их для одного выбранного host и перед каждым вычислением выводит warning; lookup выполняется на controller и может читать файлы, запускать команды, обращаться к внешним системам или иметь side effects. Вычисление `when`, templating аргументов task и preview loop, выбранного item или template следуют штатному templating Ansible и также могут выполнить lookup из task. Игнорирование ошибки task меняет её статус в recap, но не отменяет изменения, выполненные на удалённом host до ошибки. Перед использованием inspector с production-системами или секретами прочитайте раздел о безопасности в руководстве пользователя.
+Маскирование секретов является эвристическим. Команды `r!`, `run!`, `eval`, `eval-lookup`, `eval-all`, watches, `raw`, `vars!`, `v!`, `loop!`, `result!`, `args!` и preview template могут раскрывать чувствительные данные, а значения, введённые через `set`, остаются в readline history текущего процесса. `vars` и его короткий alias `v` маскируют секреты по умолчанию. Для `eval`, `eval-all`, `loop eval` и watches отключены lookup plugins Ansible. `eval-lookup` намеренно включает их для одного выбранного host и перед каждым вычислением выводит warning; lookup выполняется на controller и может читать файлы, запускать команды, обращаться к внешним системам или иметь side effects. Вычисление `when`, templating аргументов task и preview loop, выбранного item или template следуют штатному templating Ansible и также могут выполнить lookup из task. Игнорирование ошибки task меняет её статус в recap, но не отменяет изменения, выполненные на удалённом host до ошибки. Перед использованием inspector с production-системами или секретами прочитайте раздел о безопасности в руководстве пользователя.
 
 ## Лицензия
 

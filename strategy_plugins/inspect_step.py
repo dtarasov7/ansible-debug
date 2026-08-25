@@ -54,6 +54,7 @@ DOCUMENTATION = r'''
       - Previews built-in template results without writing the remote destination.
       - Executes dynamic include trees without intermediate task stops when requested.
       - Browses compiled and runtime-expanded tasks and selects exact task breakpoints.
+      - Explicitly executes one selected task with task-level no_log disabled.
     author: Custom
     notes:
       - Technical compatibility is ansible-core 2.12-2.13.
@@ -64,7 +65,7 @@ DOCUMENTATION = r'''
 
 HIDDEN_VALUE = '*** HIDDEN ***'
 PATH_UNDEFINED = object()
-VERSION = '1.1.0'
+VERSION = '1.2.0'
 PRIMARY_TESTED_ANSIBLE_VERSION = '2.13.13'
 MINIMUM_ANSIBLE_VERSION = (2, 12)
 MAXIMUM_ANSIBLE_VERSION = (2, 14)
@@ -87,6 +88,7 @@ SECRET_KEY_PARTS = (
 HELP_TEXT = '''Commands:
 
   r | run              execute task
+  r! | run!            execute task with task-level no_log disabled
   ra | run-all         execute a dynamic include completely, then resume stops
   s | skip             skip task
   c | continue         execute task and disable normal task stops
@@ -371,6 +373,7 @@ class StrategyModule(LinearStrategy):
         self._inspect_task_catalog_initialized = False
         self._inspect_task_catalog_play_name = None
         self._inspect_task_catalog_gather_facts = None
+        self._inspect_no_log_overrides = {}
         self._inspect_go = False
         self._inspect_run_all_include = None
         self._inspect_run_all_flushing_handlers = False
@@ -444,6 +447,8 @@ class StrategyModule(LinearStrategy):
             list: ``(host, task)`` pairs returned by the linear strategy. /
                 Пары ``(host, task)`` из linear strategy.
         """
+        # EN/RU: A no_log override belongs only to the previously selected lockstep task.
+        self._inspect_no_log_overrides.clear()
         self._ensure_task_catalog(iterator)
         host_tasks = super(StrategyModule, self)._get_next_task_lockstep(hosts, iterator)
         hosts_by_task = {}
@@ -499,7 +504,11 @@ class StrategyModule(LinearStrategy):
         self._inspect_run_all_flushing_handlers = run_all_flush
         try:
             return super(StrategyModule, self)._execute_meta(
-                task,
+                self._task_with_no_log_override(
+                    task,
+                    host=target_host,
+                    consume=True,
+                ),
                 play_context,
                 iterator,
                 target_host,
@@ -844,10 +853,24 @@ class StrategyModule(LinearStrategy):
                     self._display.display('  ROLE: %s' % active_role)
             display_entry(entry, 1 if active_role else 0)
 
-    def _queue_task(self, host, task, task_vars, play_context):
-        """Queue a task with refreshed variables after an inspector ``set`` command.
+    def _task_with_no_log_override(self, task, host=None, consume=False):
+        """Return a task copy with task-level ``no_log`` disabled when requested."""
+        override_hosts = self._inspect_no_log_overrides.get(task._uuid)
+        if override_hosts is None:
+            return task
+        task_copy = task.copy(exclude_parent=True, exclude_tasks=True)
+        task_copy._parent = task._parent
+        task_copy.no_log = False
+        if consume and host is not None:
+            override_hosts.discard(host.get_name())
+            if not override_hosts:
+                self._inspect_no_log_overrides.pop(task._uuid, None)
+        return task_copy
 
-        RU: Ставит task в очередь с обновлёнными variables после команды inspector ``set``.
+    def _queue_task(self, host, task, task_vars, play_context):
+        """Queue a task with inspector variable and ``no_log`` overrides.
+
+        RU: Ставит task в очередь с изменениями variables и ``no_log`` из inspector.
 
         Args / Параметры:
             host (Host): Managed host. / Управляемый host.
@@ -862,6 +885,7 @@ class StrategyModule(LinearStrategy):
         if refresh_key in self._inspect_task_var_refresh:
             task_vars = self._get_task_vars(task, host)
             self._inspect_task_var_refresh.discard(refresh_key)
+        task = self._task_with_no_log_override(task, host=host, consume=True)
         return super(StrategyModule, self)._queue_task(host, task, task_vars, play_context)
 
     def _prompt_after_failure(self, task, failed_host):
@@ -2971,6 +2995,18 @@ class StrategyModule(LinearStrategy):
             verb = parts[0].lower() if parts else ''
             if command in ('r', 'run'):
                 self._display.display('\nRUN: %s' % task.get_name())
+                return True
+            if command in ('r!', 'run!'):
+                self._inspect_no_log_overrides[task._uuid] = set(
+                    run_host.get_name() for run_host in hosts
+                )
+                self._display.warning(
+                    'task-level no_log is disabled for this task; results and '
+                    'secrets may be written to stdout and callback logs'
+                )
+                self._display.display(
+                    '\nRUN (no_log disabled): %s' % task.get_name()
+                )
                 return True
             if command in ('ra', 'run-all'):
                 if not self._is_dynamic_include(task):

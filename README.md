@@ -4,7 +4,7 @@
 
 `inspect_step` is an interactive strategy plugin for debugging Ansible playbooks and roles before each task is executed. It extends Ansible's `linear` strategy.
 
-Current version: **1.1.0**.
+Current version: **1.2.0**.
 
 Technical compatibility: **ansible-core 2.12–2.13**.  
 Primary tested version: **ansible-core 2.13.13**.
@@ -13,6 +13,7 @@ Primary tested version: **ansible-core 2.13.13**.
 
 - display the current task source before deciding whether to run it;
 - run, skip, or continue without further normal task stops;
+- explicitly run one selected task with task-level `no_log` disabled;
 - run a dynamic `include_tasks` or `include_role` completely, then resume task stops;
 - control explicit meta actions without exposing Ansible's implicit lifecycle tasks;
 - browse a flat or include-aware task tree and select an exact task breakpoint by ID;
@@ -66,12 +67,13 @@ Run the playbook with `--step`:
 ansible-playbook -i inventory playbook.yml --limit web01 --step
 ```
 
-At startup, the plugin prints `inspect_step version 1.1.0` and the Ansible compatibility status. Before each executable task it displays the task definition and opens the `inspect-step>` prompt.
+At startup, the plugin prints `inspect_step version 1.2.0` and the Ansible compatibility status. Before each executable task it displays the task definition and opens the `inspect-step>` prompt.
 
 ## Essential commands
 
 ```text
 r | run                         run the current task
+r! | run!                       run with task-level no_log disabled
 ra | run-all                    run a dynamic include completely, then resume stops
 s | skip                        skip the current task
 c | continue                    run and disable normal task stops
@@ -107,6 +109,8 @@ h | help | ?                    display command help
 
 `tasks` lists the statically known play tasks with IDs stable within the current play; `tasks tree` also shows role and include nesting. Filters are `host=HOST`, `regex=REGEXP`, `role=NAME`, and `tag=TAG`. Dynamic `include_tasks` and `include_role` children appear after Ansible expands them at runtime. Use `break pick TASK_ID` to create an exact UUID-based breakpoint for a listed executable task.
 
+`r!` and `run!` execute only the selected task with its task-level `no_log` disabled. The inspector prints a warning because results, arguments, diffs, and secrets can reach stdout and callback logs. Module arguments independently marked `no_log` by a module may remain sanitized.
+
 After an unhandled task failure, `inspect-failure>` offers `i | ignore` to continue with the current step setting, `c | continue` to continue without normal task stops, or `a | abort` to preserve standard Ansible failure behavior.
 
 ## Check mode
@@ -117,7 +121,7 @@ Use Ansible check and diff modes together with the inspector when you want modul
 ansible-playbook -i inventory playbook.yml --limit web01 --check --diff --step
 ```
 
-The prompts and commands remain available. `r`, `c`, and `g` queue tasks with `ansible_check_mode=True`; `s` does not invoke the task at all. A `changed` result means “would change” only when the module implements check mode correctly. Unsupported modules may be skipped or return incomplete registered data. Check mode is not a security boundary: `check_mode: false`, controller-side lookups including `eval-lookup`, `template-save`, custom plugins, caches, and logging can still have real effects. See the detailed user guide before relying on `--check`.
+The prompts and commands remain available. `r`, `r!`, `c`, and `g` queue tasks with `ansible_check_mode=True`; `s` does not invoke the task at all. A `changed` result means “would change” only when the module implements check mode correctly. Unsupported modules may be skipped or return incomplete registered data. Check mode is not a security boundary: `check_mode: false`, controller-side lookups including `eval-lookup`, `template-save`, custom plugins, caches, and logging can still have real effects. See the detailed user guide before relying on `--check`.
 
 ## Documentation
 
@@ -131,7 +135,7 @@ The prompts and commands remain available. `r`, `c`, and `g` queue tasks with `a
 
 ## Security notice
 
-Secret masking is heuristic. `eval`, `eval-lookup`, `eval-all`, watches, `raw`, `vars!`, `v!`, `loop!`, `result!`, `args!`, and template preview commands can expose sensitive data, and values entered with `set` remain in the current process's readline history. `vars` and its short alias `v` mask secrets by default. Ansible lookup plugins are disabled for `eval`, `eval-all`, `loop eval`, and watches. `eval-lookup` deliberately enables them for one selected host and prints a warning before every evaluation; a lookup runs on the controller and may read files, invoke commands, access external systems, or cause side effects. Evaluating `when`, templating task arguments, or previewing a loop, selected loop item, or template follows normal Ansible templating and can also execute lookups present in the task. Ignoring a task failure changes its recap status but does not undo remote-side changes made before the failure. Review the security section of the user guide before using the inspector with production systems or secrets.
+Secret masking is heuristic. `r!`, `run!`, `eval`, `eval-lookup`, `eval-all`, watches, `raw`, `vars!`, `v!`, `loop!`, `result!`, `args!`, and template preview commands can expose sensitive data, and values entered with `set` remain in the current process's readline history. `vars` and its short alias `v` mask secrets by default. Ansible lookup plugins are disabled for `eval`, `eval-all`, `loop eval`, and watches. `eval-lookup` deliberately enables them for one selected host and prints a warning before every evaluation; a lookup runs on the controller and may read files, invoke commands, access external systems, or cause side effects. Evaluating `when`, templating task arguments, or previewing a loop, selected loop item, or template follows normal Ansible templating and can also execute lookups present in the task. Ignoring a task failure changes its recap status but does not undo remote-side changes made before the failure. Review the security section of the user guide before using the inspector with production systems or secrets.
 
 ## License
 

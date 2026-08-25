@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-25
+
+### Added
+
+- Added `r!`/`run!` to execute one selected task with task-level `no_log` disabled, with an explicit secret-exposure warning and no mutation of the original task.
+
 ## [1.1.0] - 2026-08-24
 
 ### Added

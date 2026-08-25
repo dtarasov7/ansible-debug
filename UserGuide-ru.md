@@ -2,7 +2,7 @@
 
 [English](UserGuide.md) | [Русский](UserGuide-ru.md)
 
-В этом руководстве описаны установка, повседневное использование, просмотр переменных, изменение значений во время выполнения, безопасность и диагностика проблем для `inspect_step` версии 1.1.0.
+В этом руководстве описаны установка, повседневное использование, просмотр переменных, изменение значений во время выполнения, безопасность и диагностика проблем для `inspect_step` версии 1.2.0.
 
 ## 1. Назначение
 
@@ -11,6 +11,7 @@
 Плагин полезен, когда требуется:
 
 - понять, какая task сейчас будет выполнена;
+- явно посмотреть результат одной task, обычно защищённой task-level `no_log`;
 - сравнить переменные нескольких hosts, выбранных через `--limit`;
 - исследовать facts, переменные role, зарегистрированные результаты и значения `set_fact`;
 - посмотреть исходные и templated-аргументы task;
@@ -52,7 +53,7 @@ Python должен быть совместим с установленным в
 2. выводит имя task и host-контекст;
 3. отображает исходное определение task с маскированием распространённых ключей секретов;
 4. вычисляет настроенные watches и открывает цикл команд `inspect-step>`;
-5. ожидает `run`, `skip`, `go` или `continue`;
+5. ожидает `run`, `run!`, `skip`, `go` или `continue`;
 6. передаёт постановку task в очередь и её выполнение унаследованной стратегии `linear`;
 7. сохраняет обработанный результат каждого host для просмотра в последующем prompt.
 
@@ -119,7 +120,7 @@ ansible-playbook -i inventory playbook.yml --limit web --step
 При инициализации стратегии один раз на процесс `ansible-playbook` выводится строка:
 
 ```text
-inspect_step version 1.1.0
+inspect_step version 1.2.0
 Ansible compatibility: ansible-core 2.13.13 is the primary tested version (technical range 2.12-2.13).
 ```
 
@@ -155,6 +156,7 @@ inspect-step>
 | Команда | Назначение | Маскирование секретов |
 |---|---|---|
 | `r`, `run` | Выполнить текущую task | Не применяется |
+| `r!`, `run!` | Выполнить текущую task с отключённым task-level `no_log` | Намеренно отключено |
 | `ra`, `run-all` | Выполнить dynamic include и всех потомков, затем вернуть остановки task | Не применяется |
 | `s`, `skip` | Пропустить текущую task | Не применяется |
 | `c`, `continue` | Выполнить task и отключить последующие обычные остановки task | Не применяется |
@@ -212,6 +214,21 @@ RUN: application : Configure service
 ```
 
 `run` эквивалентна `r`. Пока step mode остаётся включённым, следующая исполняемая task снова откроет prompt.
+
+### Выполнение с отключённым task-level `no_log`
+
+```text
+inspect-step> r!
+
+[WARNING]: task-level no_log is disabled for this task; results and secrets may
+be written to stdout and callback logs
+
+RUN (no_log disabled): application : Read protected value
+```
+
+`run!` эквивалентна `r!`. Переопределение применяется ко всем активным hosts и items loop выбранной task. Inspector ставит в очередь копию с тем же UUID и `no_log: false`; исходная task и `no_log` последующих tasks не изменяются.
+
+Команда обходит только task-level `no_log`. Модуль может независимо маскировать аргументы, помеченные `no_log` в его argument specification; такие значения могут остаться заменёнными на `VALUE_SPECIFIED_IN_NO_LOG_PARAMETER`. Controller-wide настройка `DEFAULT_NO_LOG` также находится вне этого task-level переопределения. После `r!` считайте вывод терминала, callback plugins, job logs и сохранённые events содержащими секреты.
 
 ### Полное выполнение dynamic include
 
@@ -329,6 +346,7 @@ eval {{ ansible_check_mode }}
 | Команда | Поведение с `--check` |
 |---|---|
 | `r`, `run` | Поставить текущую task в очередь с `ansible_check_mode=True`; поддерживающий режим модуль прогнозирует результат |
+| `r!`, `run!` | Аналогично `run`, но task-level `no_log` отключён для выбранного check-mode result |
 | `s`, `skip` | Вообще не ставить task в очередь; эта task не создаёт прогноз или registered result |
 | `c`, `continue` | Поставить текущую и последующие tasks в очередь в check mode и отключить дальнейшие обычные prompts |
 | `g`, `go` | Ставить tasks в очередь в check mode до совпадения breakpoint; совпавшая task всё ещё остановлена до выполнения |
@@ -360,7 +378,7 @@ eval {{ ansible_check_mode }}
 
 ### Продолжение после ошибки task
 
-Если task, запущенная через `r`, `run`, `c` или `continue`, завершается ошибкой, которая ещё не обработана через `ignore_errors` или `block`/`rescue`, plugin выводит:
+Если task, запущенная через `r`, `run`, `r!`, `run!`, `c` или `continue`, завершается ошибкой, которая ещё не обработана через `ignore_errors` или `block`/`rescue`, plugin выводит:
 
 ```text
 INSPECT FAILURE: application : Configure service
@@ -968,7 +986,7 @@ set release_code '"0012"'
 9. На task `ansible.builtin.template` используйте `template [HOST]` или `template-save FILE [HOST]` для проверки результирующего файла.
 10. При необходимости выполните `set` и сразу проверьте эффективное значение через `v`, `eval`, `args`, `loop` или `template`.
 11. После длинного вывода используйте `w`, чтобы восстановить контекст task.
-12. Для длинного прохода создайте узкие breakpoints и используйте `go`; иначе выберите `r`, `s` или `c`.
+12. Для длинного прохода создайте узкие breakpoints и используйте `go`; иначе выберите `r`, `s` или `c`. Используйте `r!` только когда раскрытие результата выбранной task явно необходимо.
 13. При появлении `inspect-failure>` изучите fatal-результат и явно выберите `ignore`, `continue` или `abort`.
 
 При нескольких hosts сначала выполните `hosts` и явно указывайте host в командах просмотра, когда значения зависят от host.
@@ -992,6 +1010,7 @@ set release_code '"0012"'
 
 Команды, способные выводить значения без маскирования:
 
+- `r!` и `run!`;
 - `e` и `eval`;
 - `eval-lookup`;
 - `eval-all` и watches;
@@ -1005,7 +1024,7 @@ set release_code '"0012"'
 
 `set` не повторяет значение в ответе, но исходная команда остаётся на экране терминала и в readline history текущего процесса. Не вводите production-секреты, если вывод терминала или запись сессии не являются доверенными.
 
-Ansible `no_log` не превращает inspector в полноценный фильтр секретов. Внимательно проверяйте preview task и используемые диагностические команды.
+Ansible `no_log` не превращает inspector в полноценный фильтр секретов. `r!` намеренно отключает task-level `no_log` для одной выбранной task и может раскрыть её result через все включённые callbacks. Module-level маскирование аргументов и controller-wide `DEFAULT_NO_LOG` независимы и могут продолжить скрывать вывод. Внимательно проверяйте preview task и используемые диагностические команды.
 
 `eval`, `eval-all`, `loop eval` и watches отключают lookup plugins Ansible, чтобы предотвратить их controller-side side effects. Jinja filters и tests, включая добавленные проектом расширения, продолжают выполняться, поэтому используйте только доверенные выражения. `eval-lookup` является явным исключением: команда включает lookup plugins для одного вызова и одного host, каждый раз показывает warning и не маскирует результат. Preview `when` и loop, просмотр templated-аргументов, preview template, `loop when`, `loop args` и `loop template` используют штатное вычисление Ansible, поэтому встроенный lookup может выполниться на controller во время preview.
 
@@ -1100,6 +1119,7 @@ Bare-аргумент, равный имени активного host, инте
 - Preview `when` является диагностическим; executor повторно вычисляет condition после `run`, поэтому изменяемое состояние или lookups могут дать другое решение.
 - Каждая явная meta-task открывает один prompt inspector для своей активной lockstep-группы hosts; неявные lifecycle-tasks meta и noop, созданные Ansible, prompt не открывают.
 - `run-all` работает только для dynamic `include_tasks` и `include_role`; static imports раскрываются до запуска strategy и не могут открыть prompt уровня import.
+- `r!` отключает task-level `no_log` только для выбранной task; команда не может отменить уже выполненное модулем маскирование или надёжно переопределить controller-wide `DEFAULT_NO_LOG`.
 - Вывод исходного определения нормализует YAML и не сохраняет комментарии.
 - `set` изменяет только top-level переменные и не сохраняет изменения постоянно.
 - Команды просмотра, watches и управление breakpoints доступны в обычных pre-task prompts `inspect-step>`, но не в post-failure prompt выбора дальнейшего действия.
@@ -1176,6 +1196,8 @@ i
 ```text
 r
 run
+r!
+run!
 s
 skip
 c
