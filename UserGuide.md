@@ -2,7 +2,7 @@
 
 [English](UserGuide.md) | [Русский](UserGuide-ru.md)
 
-This guide describes installation, daily use, variable inspection, runtime variable changes, security considerations, and troubleshooting for `inspect_step` version 1.2.0.
+This guide describes installation, daily use, variable inspection, runtime variable changes, security considerations, and troubleshooting for `inspect_step` version 2.0.0.
 
 ## 1. Purpose
 
@@ -120,7 +120,7 @@ ansible-playbook -i inventory playbook.yml --limit web --step
 At strategy initialization, the following line is printed once per `ansible-playbook` process:
 
 ```text
-inspect_step version 1.2.0
+inspect_step version 2.0.0
 Ansible compatibility: ansible-core 2.13.13 is the primary tested version (technical range 2.12-2.13).
 ```
 
@@ -163,8 +163,8 @@ Implicit tasks such as `Gathering Facts` may not have original parsed task data.
 | `g`, `go` | Execute tasks until a configured breakpoint matches | Not applicable |
 | `w` | Display the current task source again | Enabled |
 | `hosts` | List play hosts after inventory and `--limit` | Not applicable |
-| `vars`, `v` + `[NAME\|PATH\|GLOB\|regex=REGEXP] [host=HOST] [depth=N]` | Display variables; `v` is the complete short alias | Enabled |
-| `vars!`, `v!` + `[NAME\|PATH\|GLOB\|regex=REGEXP] [host=HOST] [depth=N]` | Same command without masking | Disabled intentionally |
+| `vars`, `v`, `var` + `[NAME\|PATH\|glob=PATTERN\|regex=REGEXP\|JINJA_EXPRESSION] [host=HOST] [depth=N]` | Display variables and evaluate expressions | Heuristic; computed scalars can reveal secrets |
+| `vars!`, `v!`, `var!` + `[NAME\|PATH\|glob=PATTERN\|regex=REGEXP\|JINJA_EXPRESSION] [host=HOST] [depth=N]` | Same command without masking | Disabled intentionally |
 | `set NAME YAML_VALUE [host=HOST]` | Change a top-level variable in memory | Value is not echoed |
 | `e JINJA_EXPRESSION [host=HOST]` | Evaluate a composite Jinja string; alias for `eval` | Disabled |
 | `eval JINJA_EXPRESSION [host=HOST]` | Evaluate a composite Jinja string with lookups disabled | Disabled |
@@ -419,9 +419,9 @@ HOSTS IN CURRENT PLAY (--limit applied)
 
 A host can belong to the play without being active for the current task. The labels make this distinction explicit.
 
-## 10. Unified `vars` command and `v` alias
+## 10. Unified `vars` command and `v`/`var` aliases
 
-`vars` is the primary variable-inspection command. `v` is its complete short alias: both commands use the same parser, mask secrets in the same way, and accept the same options. The old separate `var` alias does not exist.
+`vars` is the primary variable-inspection command. `v` and `var` are short aliases: all three use the same parser, options, and masking rules. Use `vars!`, `v!`, or `var!` to disable masking.
 
 ### All task variables
 
@@ -449,7 +449,7 @@ vars json_settings.limits.connections
 v application_servers.0.address
 ```
 
-Dot notation traverses mappings and decoded JSON objects. Numeric path components index lists and tuples. A string containing valid JSON object or array data is decoded before path traversal and formatted output.
+Dot notation traverses mappings and decoded JSON objects. Numeric path components index lists and tuples. A string containing valid JSON object or array data is decoded before path traversal and formatted output. For keys with characters outside a variable name, use Jinja brackets, for example `v app_config['foo-bar']`.
 
 The host label is always printed. By default, the inspection host from the task header is used. Select another host only with an explicit `host=NAME` option:
 
@@ -460,24 +460,42 @@ v app_port host=web02 depth=1
 
 The positional form `vars app_port web02` is not supported because it is ambiguous when a hostname is also a variable name.
 
-### Globs and regular expressions
+### Jinja expressions
 
-Specify a glob directly. `*` means any number of characters, and `?` means one character:
+Enter an expression with Ansible filters, functions, or multiple variables after the command name. The `{{ }}` delimiters are optional:
 
 ```text
-vars role_*
-v *port*
-vars role_?
+var app_password | length
+vars app_config.workers + 2
+v [app_root, app_config.workers] | to_json
+set tg test
+v groups[tg]              # members of group test
+v groups[tg][0]           # first host: test01
 ```
 
-A regular expression always has an explicit `regex=` prefix and is applied to the complete top-level name with Python `fullmatch`:
+The expression uses the selected host's variables. The usual `host=HOST` and `depth=N` options are available. Lookup plugins are disabled. Mapping keys are masked as usual, but a computed scalar can reveal a secret; avoid printing secrets through expressions.
+
+### Globs and regular expressions
+
+A glob is a simple pattern for matching variable names. Prefix it with `glob=` so the inspector knows you want a name search. It checks complete top-level names only:
+
+```text
+v glob=role_*       # role_name, role_port: * matches zero or more characters
+v glob=*port*       # app_port, role_port: port anywhere in the name
+v glob=role_?       # role_a, but not role_ab: ? matches exactly one character
+v glob=role_[ab]    # role_a and role_b: [ab] matches one listed character
+```
+
+Without `glob=`, brackets are Jinja indexing. For example, `v groups[tg][0]` gets the first host from the group named by `tg`. Operators are also evaluated as Jinja expressions: `v a*b` multiplies two variables. The previous `v role_*` syntax must be changed to `v glob=role_*`.
+
+For Python regular expressions, use the separate `regex=` prefix. The expression must match the complete top-level name:
 
 ```text
 vars regex=^application_.*$
 v regex=^(role|application)_[a-z0-9_]+$
 ```
 
-This syntax prevents a glob from being mistaken for a regular expression. Patterns inspect top-level names only and do not recursively search nested keys. All matching values are displayed together.
+Glob and regexp searches display all matching values together; neither searches nested keys.
 
 ### Undefined values and invalid regular expressions
 
@@ -493,7 +511,7 @@ Invalid variable regexp: nothing to repeat at position 0
 
 ### Limit output depth
 
-Facts can make a complete variable dump extremely large. A positive `depth=N` option collapses nested containers and works identically with `vars` and `v`:
+Facts can make a complete variable dump extremely large. A positive `depth=N` option collapses nested containers and works identically with `vars`, `v`, and `var`:
 
 ```text
 vars depth=1
@@ -541,13 +559,13 @@ vars hostvars.web02.ansible_facts.python.version
 
 ### Secret masking
 
-`vars` and `v` recursively replace values whose keys contain common secret markers such as `password`, `passwd`, `secret`, `token`, `api_key`, `apikey`, or `private_key`:
+`vars`, `v`, and `var` recursively replace values whose keys contain common secret markers such as `password`, `passwd`, `secret`, `token`, `api_key`, `apikey`, or `private_key`:
 
 ```text
 'database_password': '*** HIDDEN ***'
 ```
 
-Disabling masking must always be explicit. `vars!` and `v!` are also complete aliases:
+Disabling masking must always be explicit. `vars!`, `v!`, and `var!` are also complete aliases:
 
 ```text
 vars! app_config host=web02 depth=2
@@ -958,7 +976,7 @@ Variable names must match `[A-Za-z_][A-Za-z0-9_]*`. Nested assignments such as `
 
 ### Lifetime and precedence
 
-The new value is available to `vars` (and its `v` alias), to `args`, to the task currently waiting at the prompt, and to subsequent tasks. It is not written to inventory, variable files, or the playbook and disappears when the `ansible-playbook` process ends.
+The new value is available to `vars` (and its `v` and `var` aliases), to `args`, to the task currently waiting at the prompt, and to subsequent tasks. It is not written to inventory, variable files, or the playbook and disappears when the `ansible-playbook` process ends.
 
 Later `set_fact` or registered results can replace a value. Extra vars supplied with `-e` and Ansible magic variables have higher precedence and cannot be overridden by this command.
 
@@ -978,7 +996,7 @@ History exists only in the current `ansible-playbook` process and is not saved b
 1. Start with one host: `--limit web01 --step`.
 2. Read the automatic task preview before entering an execution command.
 3. Use `vars depth=1` for an overview after fact gathering.
-4. Narrow the investigation with `vars NAME`, `v PATH depth=N`, a glob, or an explicit `regex=REGEXP`.
+4. Narrow the investigation with `vars NAME`, `v PATH depth=N`, a `glob=PATTERN` search, or an explicit `regex=REGEXP`.
 5. Use `when all` and `eval-all JINJA diff=true` to compare host-specific decisions and values.
 6. On a looped task, use `loop all depth=N` to compare expanded items before execution.
 7. Use `args` to verify templated arguments and `result all depth=2` to inspect the previous task.
@@ -1001,7 +1019,7 @@ Commands that mask common secret-key names by default:
 
 - automatic task source preview;
 - `w`;
-- `vars` and `v`;
+- `vars`, `v`, and `var`;
 - `loop`;
 - `result`;
 - `args`;
@@ -1015,7 +1033,7 @@ Commands that can expose values without masking:
 - `eval-lookup`;
 - `eval-all` and watches;
 - `raw`;
-- `vars!` and `v!`;
+- `vars!`, `v!`, and `var!`;
 - `loop!`;
 - `result!`;
 - `args!`;
@@ -1068,7 +1086,7 @@ Start with `vars depth=1`, then inspect a branch with `vars PATH depth=N` or a s
 
 ### A variable or path is undefined
 
-Run `vars depth=1` or a matching pattern such as `v prefix_*` or `vars regex=^prefix_.*$` to confirm the top-level name. Remember that patterns search only top-level variable names.
+Run `vars depth=1` or a matching pattern such as `v glob=prefix_*` or `vars regex=^prefix_.*$` to confirm the top-level name. Remember that patterns search only top-level variable names.
 
 ### `eval` cannot calculate an expression
 
@@ -1100,7 +1118,7 @@ set settings '{"enabled": true, "ports": [8080, 8081]}'
 
 ### Host selection is unexpected in `vars`
 
-A bare token equal to an active hostname is interpreted as HOST. Use an explicit nested path such as `hostvars.web02` when the host name must be part of the data path.
+Host selection requires `host=HOST`. A bare hostname is part of the selector or expression; use `hostvars.web02` to inspect that host's data.
 
 ### A template preview cannot be rendered
 
@@ -1218,7 +1236,7 @@ help
 ?
 ```
 
-### Variables with `vars` and `v`
+### Variables with `vars`, `v`, and `var`
 
 ```text
 vars app_port
@@ -1230,15 +1248,17 @@ v app_port host=test02
 vars hostvars
 v hostvars host=test02
 vars hostvars.ansible_facts host=test02
-vars role_*
-v *port*
-vars role_?
+vars glob=role_*
+v glob=*port*
+vars glob=role_?
 v regex=^role_.*$
 vars regex=^(role|app)_[a-z0-9_]+$
 v regex=^backend_[0-9]+$
+var app_password | length
+var app_config.workers + host_app_port host=test02
 ```
 
-`vars` and `v` are fully equivalent. Glob and regexp patterns inspect top-level names only; regular expressions require the `regex=` prefix. Use a dot path rather than a pattern to inspect nested values.
+`vars`, `v`, and `var` are fully equivalent. Glob and regexp patterns inspect top-level names only; use the `glob=` or `regex=` prefix. Use a dot path rather than a pattern to inspect nested values.
 
 ```text
 vars
@@ -1253,7 +1273,7 @@ vars! app_config host=test02 depth=3
 v! app_config host=test02 depth=3
 ```
 
-The selector, `host=HOST`, and `depth=N` may appear in any order, provided that each is specified no more than once.
+The selector or expression may span multiple words. `host=HOST` and `depth=N` may appear in any order but each may be specified only once.
 
 ### Runtime variable changes
 
@@ -1347,8 +1367,8 @@ Pattern comparison:
 
 | Command | Syntax | Matching operation | Example |
 |---|---|---|---|
-| `vars`, `v` | glob | complete top-level variable name | `v *port*` |
-| `vars`, `v` | `regex=` + Python regexp | complete top-level name through `fullmatch` | `vars regex=^app_.*$` |
+| `vars`, `v`, `var` | `glob=` + pattern | complete top-level variable name | `v glob=*port*` |
+| `vars`, `v`, `var` | `regex=` + Python regexp | complete top-level name through `fullmatch` | `vars regex=^app_.*$` |
 | `break task` | Python regexp | substring search through `search` | `break task application` |
 | `break role` | exact string | case-sensitive equality | `break role test_role` |
 | `break tag` | exact string | case-sensitive equality | `break tag inspect_demo` |

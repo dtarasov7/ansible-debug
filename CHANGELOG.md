@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-25
+
+### Changed
+
+- Variable-name glob searches now require `glob=PATTERN`; `regex=REGEXP` remains explicit. Unprefixed brackets are always Jinja indexing, and unprefixed operators are evaluated as expressions. Migrate `v role_*` to `v glob=role_*`.
+- Expanded English and Russian documentation with glob syntax, examples, and the migration rule.
+
+## [1.3.1] - 2026-09-25
+
+### Fixed
+
+- Interpret bracket indexing such as `groups[tg]` and `groups[tg][0]` as Jinja expressions when the root is a variable container, while retaining glob character classes such as `role_[ab]`.
+
+## [1.3.0] - 2026-09-25
+
+### Added
+
+- Added `var`/`var!` aliases and Jinja expressions with filters and multiple variables to `vars`, `v`, and `var`; expression evaluation uses the selected host's variables with lookups disabled.
+- Updated command documentation and variable-flow diagrams.
+
 ## [1.2.0] - 2026-08-25
 
 ### Added

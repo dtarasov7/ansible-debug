@@ -38,7 +38,7 @@ loop Zero or more inspection commands
   Operator -> Inspector : inspection, watch, breakpoint, or execution command
   Inspector -> Variables : read or update context
   Variables --> Inspector : effective values
-  opt Composite expression
+  opt vars / v / var or eval expression
     Inspector -> Templar : evaluate Jinja (lookups disabled)
     Templar --> Inspector : host-specific result
   end

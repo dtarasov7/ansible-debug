@@ -4,7 +4,7 @@
 
 `inspect_step` is an interactive strategy plugin for debugging Ansible playbooks and roles before each task is executed. It extends Ansible's `linear` strategy.
 
-Current version: **1.2.0**.
+Current version: **2.0.0**.
 
 Technical compatibility: **ansible-core 2.12–2.13**.  
 Primary tested version: **ansible-core 2.13.13**.
@@ -67,7 +67,7 @@ Run the playbook with `--step`:
 ansible-playbook -i inventory playbook.yml --limit web01 --step
 ```
 
-At startup, the plugin prints `inspect_step version 1.2.0` and the Ansible compatibility status. Before each executable task it displays the task definition and opens the `inspect-step>` prompt.
+At startup, the plugin prints `inspect_step version 2.0.0` and the Ansible compatibility status. Before each executable task it displays the task definition and opens the `inspect-step>` prompt.
 
 ## Essential commands
 
@@ -80,9 +80,9 @@ c | continue                    run and disable normal task stops
 g | go                          run until a configured breakpoint
 w                               display the current task again
 hosts                           list play hosts after --limit
-vars|v [SELECTOR] [host=HOST] [depth=N]
+vars|v|var [SELECTOR] [host=HOST] [depth=N]
                                 inspect variables with masked secrets
-vars!|v! [SELECTOR] [host=HOST] [depth=N]
+vars!|v!|var! [SELECTOR] [host=HOST] [depth=N]
                                 inspect variables without masking
 set NAME VALUE [host=HOST]      temporarily change a variable
 e | eval JINJA [host=HOST]      evaluate a composite Jinja string
@@ -105,7 +105,7 @@ template-save FILE [HOST]       save a rendered template locally
 h | help | ?                    display command help
 ```
 
-`vars` is the primary command name and `v` is its complete short alias. `SELECTOR` may be an exact name, a dotted path, a glob, or an explicit regular expression such as `regex=^role_.*$`. Optional `host=HOST` and `depth=N` parameters work identically with both names. The `!` suffix explicitly disables masking.
+`vars` is the primary command, with `v` and `var` as short aliases. `SELECTOR` may be an exact name, dotted path, Jinja expression, `glob=PATTERN`, or `regex=REGEXP`. A glob is a wildcard pattern for top-level variable names: `*` matches any number of characters (`v glob=role_*`), `?` matches one (`v glob=role_?`), and `[ab]` matches one listed character (`v glob=role_[ab]`). The `glob=` prefix is required; unprefixed brackets are Jinja indexing, as in `v groups[tg][0]`. Optional `host=HOST` and `depth=N` parameters work with all three names. The `!` suffix disables masking. A computed expression can reveal a secret.
 
 `tasks` lists the statically known play tasks with IDs stable within the current play; `tasks tree` also shows role and include nesting. Filters are `host=HOST`, `regex=REGEXP`, `role=NAME`, and `tag=TAG`. Dynamic `include_tasks` and `include_role` children appear after Ansible expands them at runtime. Use `break pick TASK_ID` to create an exact UUID-based breakpoint for a listed executable task.
 
@@ -135,7 +135,7 @@ The prompts and commands remain available. `r`, `r!`, `c`, and `g` queue tasks w
 
 ## Security notice
 
-Secret masking is heuristic. `r!`, `run!`, `eval`, `eval-lookup`, `eval-all`, watches, `raw`, `vars!`, `v!`, `loop!`, `result!`, `args!`, and template preview commands can expose sensitive data, and values entered with `set` remain in the current process's readline history. `vars` and its short alias `v` mask secrets by default. Ansible lookup plugins are disabled for `eval`, `eval-all`, `loop eval`, and watches. `eval-lookup` deliberately enables them for one selected host and prints a warning before every evaluation; a lookup runs on the controller and may read files, invoke commands, access external systems, or cause side effects. Evaluating `when`, templating task arguments, or previewing a loop, selected loop item, or template follows normal Ansible templating and can also execute lookups present in the task. Ignoring a task failure changes its recap status but does not undo remote-side changes made before the failure. Review the security section of the user guide before using the inspector with production systems or secrets.
+Secret masking is heuristic. `r!`, `run!`, `eval`, `eval-lookup`, `eval-all`, watches, `raw`, `vars!`, `v!`, `var!`, `loop!`, `result!`, `args!`, and template preview commands can expose sensitive data, and values entered with `set` remain in the current process's readline history. `vars`, `v`, and `var` mask secrets by default. Ansible lookup plugins are disabled for `vars`/`v`/`var` expressions, `eval`, `eval-all`, `loop eval`, and watches. `eval-lookup` deliberately enables them for one selected host and prints a warning before every evaluation; a lookup runs on the controller and may read files, invoke commands, access external systems, or cause side effects. Evaluating `when`, templating task arguments, or previewing a loop, selected loop item, or template follows normal Ansible templating and can also execute lookups present in the task. Ignoring a task failure changes its recap status but does not undo remote-side changes made before the failure. Review the security section of the user guide before using the inspector with production systems or secrets.
 
 ## License
 

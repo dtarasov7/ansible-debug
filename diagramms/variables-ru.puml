@@ -17,7 +17,7 @@ component "Менеджер переменных\nprecedence Ansible" as Manager
 component "Зависящие от host\ntask_vars" as TaskVars
 
 package "Путь чтения" {
-  component "vars / v (единый parser)\nargs / result" as ReadCommands
+  component "vars / v / var (единый parser)\nargs / result" as ReadCommands
   component "eval / eval-all / watch" as EvalCommand
   component "eval-lookup\n(один выбранный host)" as EvalLookupCommand
   component "Вычислитель when" as WhenCommand
@@ -26,7 +26,7 @@ package "Путь чтения" {
   component "Шаблонизатор\nlookups отключены" as EvalTemplar
   component "Шаблонизатор\nlookups включены" as LookupTemplar
   component "Форматирование выражения / JSON\n(без маскирования)" as EvalFormatter
-  component "Разрешение имени, dot-path,\nglob или явного regex=" as Resolver
+  component "Разрешение имени, dot-path,\nglob= или regex=" as Resolver
   component "Декодирование JSON и\nнормализация структур" as Normalizer
   component "Ограничение глубины" as Depth
   component "Маскирование секретов" as Masker
@@ -53,9 +53,11 @@ TaskVars --> EvalLookupCommand
 TaskVars --> WhenCommand
 TaskVars --> LoopCommand
 ReadCommands --> Resolver : masked по умолчанию\n! отключает masking
+ReadCommands --> EvalTemplar : выражение Jinja\nlookups disabled
 Resolver --> Normalizer
 EvalCommand --> EvalTemplar
 EvalTemplar --> EvalFormatter : вычисленное значение
+EvalTemplar --> Normalizer : результат vars; masking по ключам
 EvalLookupCommand --> LookupTemplar : сначала явный warning
 LookupTemplar --> EvalFormatter : немаскированный lookup-результат
 WhenCommand --> EvalFormatter : RUN / SKIP для host

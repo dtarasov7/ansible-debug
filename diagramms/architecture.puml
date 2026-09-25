@@ -36,7 +36,7 @@ Inspector --> Prompt : task and host context
 Inspector --> DebugState : manage watches, breakpoints, go, and no_log overrides
 Inspector --> Variables : collect or update variables
 Inspector --> Templar : template task arguments (normal lookups)
-Inspector --> Templar : evaluate expression (lookups disabled)
+Inspector --> Templar : evaluate vars / v / var or eval expression (lookups disabled)
 Inspector --> Templar : explicit lookup evaluation (one host, warning)
 Inspector --> Templar : expand loop items (normal lookups)
 Templar --> Inspector : rendered content or value

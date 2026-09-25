@@ -17,7 +17,7 @@ component "VariableManager\nAnsible precedence" as Manager
 component "Host-specific\ntask_vars" as TaskVars
 
 package "Read Path" {
-  component "vars / v (shared parser)\nargs / result" as ReadCommands
+  component "vars / v / var (shared parser)\nargs / result" as ReadCommands
   component "eval / eval-all / watch" as EvalCommand
   component "eval-lookup\n(one selected host)" as EvalLookupCommand
   component "when evaluator" as WhenCommand
@@ -26,7 +26,7 @@ package "Read Path" {
   component "Templar\nlookups disabled" as EvalTemplar
   component "Templar\nlookups enabled" as LookupTemplar
   component "Expression / JSON formatter\n(unmasked)" as EvalFormatter
-  component "Name, dot-path, glob,\nor explicit regex= resolver" as Resolver
+  component "Name, dot-path,\nglob= or regex= resolver" as Resolver
   component "JSON decoder and\nbuilt-in normalization" as Normalizer
   component "Depth limiter" as Depth
   component "Secret masker" as Masker
@@ -53,9 +53,11 @@ TaskVars --> EvalLookupCommand
 TaskVars --> WhenCommand
 TaskVars --> LoopCommand
 ReadCommands --> Resolver : masked by default\n! disables masking
+ReadCommands --> EvalTemplar : Jinja expression\nlookups disabled
 Resolver --> Normalizer
 EvalCommand --> EvalTemplar
 EvalTemplar --> EvalFormatter : evaluated value
+EvalTemplar --> Normalizer : vars result; masked by keys
 EvalLookupCommand --> LookupTemplar : explicit warning first
 LookupTemplar --> EvalFormatter : unmasked lookup result
 WhenCommand --> EvalFormatter : RUN / SKIP per host

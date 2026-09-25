@@ -65,7 +65,7 @@ DOCUMENTATION = r'''
 
 HIDDEN_VALUE = '*** HIDDEN ***'
 PATH_UNDEFINED = object()
-VERSION = '1.2.0'
+VERSION = '2.0.0'
 PRIMARY_TESTED_ANSIBLE_VERSION = '2.13.13'
 MINIMUM_ANSIBLE_VERSION = (2, 12)
 MAXIMUM_ANSIBLE_VERSION = (2, 14)
@@ -97,9 +97,10 @@ HELP_TEXT = '''Commands:
   w                     show current task source again
 
   hosts                 show play hosts selected by inventory and --limit
-  vars | v [NAME|PATH|GLOB|regex=REGEXP] [host=HOST] [depth=N]
+  vars | v | var [NAME|PATH|glob=PATTERN|regex=REGEXP|JINJA_EXPRESSION] [host=HOST] [depth=N]
                         show variables; secrets are masked by default
-  vars! | v! [NAME|PATH|GLOB|regex=REGEXP] [host=HOST] [depth=N]
+                        glob= and regex= search top-level names
+  vars! | v! | var! [NAME|PATH|glob=PATTERN|regex=REGEXP|JINJA_EXPRESSION] [host=HOST] [depth=N]
                         same, including secrets
   set NAME YAML_VALUE [host=HOST]
                         change a variable for all play hosts, or one host
@@ -1371,8 +1372,8 @@ class StrategyModule(LinearStrategy):
         Args / Параметры:
             host (Host): Host providing the variable context. / Host контекста variables.
             task_vars (dict or None): Effective variables. / Effective variables.
-            variable_selector (str or None): Optional name, path, glob, or explicit regexp. /
-                Необязательные имя, path, glob или явный regexp.
+            variable_selector (str or None): Optional name, path, explicit glob, regexp, or expression. /
+                Необязательные имя, path, явный glob, regexp или expression.
             reveal_secrets (bool): Disable heuristic masking. / Отключить masking secrets.
             max_depth (int or None): Maximum expanded depth. / Глубина раскрытия.
             explicit_host (bool): Narrow ``hostvars`` to ``host``. / Ограничить ``hostvars``.
@@ -1392,11 +1393,47 @@ class StrategyModule(LinearStrategy):
         json_format = False
         if variable_selector is not None:
             use_regex = variable_selector.startswith('regex=')
-            pattern = variable_selector.split('=', 1)[1] if use_regex else variable_selector
-            use_glob = not use_regex and any(char in pattern for char in '*?[')
+            use_glob = variable_selector.startswith('glob=')
+            use_expression = not (
+                use_regex
+                or use_glob
+                or re.fullmatch(
+                    r'[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*',
+                    variable_selector,
+                ) is not None
+            )
+            if use_expression:
+                expression = variable_selector
+                if not expression.startswith('{{'):
+                    expression = '{{ %s }}' % expression
+                ok, value = self._evaluate_expression(expression, task_vars)
+                if not ok:
+                    self._display.warning(
+                        'Cannot evaluate variable expression for %s: %s'
+                        % (host.get_name(), value)
+                    )
+                    return
+                self._display.display(
+                    '%s [%s]%s ='
+                    % (variable_selector, host.get_name(), depth_suffix)
+                )
+                self._display_value(
+                    value,
+                    mask_secrets=not reveal_secrets,
+                    json_format=True,
+                    max_depth=max_depth,
+                )
+                return
+            pattern = (
+                variable_selector.split('=', 1)[1]
+                if use_regex or use_glob else variable_selector
+            )
             if use_regex or use_glob:
                 if not pattern:
-                    self._display.display('Invalid variable regexp: pattern is empty')
+                    pattern_type = 'regexp' if use_regex else 'glob'
+                    self._display.display(
+                        'Invalid variable %s: pattern is empty' % pattern_type
+                    )
                     return
                 try:
                     matching_names = self._variable_names_matching(
@@ -1456,9 +1493,9 @@ class StrategyModule(LinearStrategy):
         )
 
     def _parse_vars_options(self, arguments):
-        """Parse shared ``vars``/``v`` selector, host, and depth options.
+        """Parse shared ``vars``/``v``/``var`` selector, host, and depth options.
 
-        RU: Разбирает общие параметры selector, host и depth для ``vars``/``v``.
+        RU: Разбирает общие параметры selector, host и depth для ``vars``/``v``/``var``.
 
         Args / Параметры:
             arguments (list[str]): Command arguments. / Аргументы команды.
@@ -1470,7 +1507,7 @@ class StrategyModule(LinearStrategy):
             ValueError: An option is empty, duplicated, or invalid. /
                 Параметр пуст, повторён или некорректен.
         """
-        variable_selector = None
+        selector_parts = []
         host_name = None
         max_depth = None
 
@@ -1490,12 +1527,12 @@ class StrategyModule(LinearStrategy):
                 host_name = argument.split('=', 1)[1]
                 if not host_name:
                     raise ValueError('host name must not be empty')
-            elif variable_selector is None:
-                variable_selector = argument
+            elif argument:
+                selector_parts.append(argument)
             else:
-                raise ValueError('variable selector may be specified only once')
+                raise ValueError('variable selector must not be empty')
 
-        return variable_selector, host_name, max_depth
+        return ' '.join(selector_parts) if selector_parts else None, host_name, max_depth
 
     def _parse_set_command(self, response):
         """Parse ``set NAME YAML_VALUE [host=HOST]`` into a typed value.
@@ -3260,7 +3297,7 @@ class StrategyModule(LinearStrategy):
                     'break tag TAG | break list | break delete ID'
                 )
                 continue
-            if verb in ('vars', 'vars!', 'v', 'v!'):
+            if verb in ('vars', 'vars!', 'v', 'v!', 'var', 'var!'):
                 try:
                     variable_selector, host_name, max_depth = self._parse_vars_options(
                         parts[1:]
@@ -3268,7 +3305,7 @@ class StrategyModule(LinearStrategy):
                 except ValueError as exc:
                     self._display.display('Invalid vars options: %s' % to_text(exc))
                     self._display.display(
-                        'Usage: %s [NAME|PATH|GLOB|regex=REGEXP] '
+                        'Usage: %s [NAME|PATH|glob=PATTERN|regex=REGEXP|JINJA_EXPRESSION] '
                         '[host=HOST] [depth=N]' % verb
                     )
                     continue

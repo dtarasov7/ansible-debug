@@ -36,7 +36,7 @@ Inspector --> Prompt : контекст task и host
 Inspector --> DebugState : управляет watches, breakpoints, go и no_log overrides
 Inspector --> Variables : получает или изменяет переменные
 Inspector --> Templar : подставляет переменные в аргументы (штатные lookups)
-Inspector --> Templar : вычисляет выражение (lookups отключены)
+Inspector --> Templar : вычисляет выражение vars / v / var или eval (lookups отключены)
 Inspector --> Templar : явно вычисляет lookup (один host, warning)
 Inspector --> Templar : раскрывает loop items (штатные lookups)
 Templar --> Inspector : возвращает содержимое или значение

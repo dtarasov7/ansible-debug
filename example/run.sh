@@ -1,0 +1,1 @@
+ansible-playbook -i inventory playbook.yml --limit web01 --step

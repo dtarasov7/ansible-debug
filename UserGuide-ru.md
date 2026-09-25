@@ -2,7 +2,7 @@
 
 [English](UserGuide.md) | [Русский](UserGuide-ru.md)
 
-В этом руководстве описаны установка, повседневное использование, просмотр переменных, изменение значений во время выполнения, безопасность и диагностика проблем для `inspect_step` версии 1.2.0.
+В этом руководстве описаны установка, повседневное использование, просмотр переменных, изменение значений во время выполнения, безопасность и диагностика проблем для `inspect_step` версии 2.0.0.
 
 ## 1. Назначение
 
@@ -120,7 +120,7 @@ ansible-playbook -i inventory playbook.yml --limit web --step
 При инициализации стратегии один раз на процесс `ansible-playbook` выводится строка:
 
 ```text
-inspect_step version 1.2.0
+inspect_step version 2.0.0
 Ansible compatibility: ansible-core 2.13.13 is the primary tested version (technical range 2.12-2.13).
 ```
 
@@ -163,8 +163,8 @@ inspect-step>
 | `g`, `go` | Выполнять tasks до совпадения с настроенным breakpoint | Не применяется |
 | `w` | Повторно показать исходное определение task | Включено |
 | `hosts` | Показать hosts play после inventory и `--limit` | Не применяется |
-| `vars`, `v` + `[NAME\|PATH\|GLOB\|regex=REGEXP] [host=HOST] [depth=N]` | Показать variables; `v` — полный короткий alias | Включено |
-| `vars!`, `v!` + `[NAME\|PATH\|GLOB\|regex=REGEXP] [host=HOST] [depth=N]` | Аналогичная команда без маскирования | Намеренно отключено |
+| `vars`, `v`, `var` + `[NAME\|PATH\|glob=PATTERN\|regex=REGEXP\|JINJA_EXPRESSION] [host=HOST] [depth=N]` | Показать variables или вычислить выражение | Эвристическое; вычисленный скаляр может раскрыть секрет |
+| `vars!`, `v!`, `var!` + `[NAME\|PATH\|glob=PATTERN\|regex=REGEXP\|JINJA_EXPRESSION] [host=HOST] [depth=N]` | Аналогичная команда без маскирования | Намеренно отключено |
 | `set NAME YAML_VALUE [host=HOST]` | Изменить top-level переменную в памяти | Значение не повторяется |
 | `e JINJA_EXPRESSION [host=HOST]` | Вычислить составную Jinja-строку; alias для `eval` | Отключено |
 | `eval JINJA_EXPRESSION [host=HOST]` | Вычислить составную Jinja-строку с отключёнными lookups | Отключено |
@@ -419,9 +419,9 @@ HOSTS IN CURRENT PLAY (--limit applied)
 
 Host может принадлежать play, но не быть активным для текущей task. Метки явно показывают это различие.
 
-## 10. Единая команда `vars` и alias `v`
+## 10. Единая команда `vars` и alias `v`/`var`
 
-`vars` — основная команда просмотра переменных. `v` является её полным коротким alias: обе команды используют один parser, одинаково маскируют секреты и поддерживают один набор параметров. Старого отдельного alias `var` нет.
+`vars` — основная команда просмотра переменных. `v` и `var` — её короткие alias: все три команды используют один parser, одинаковые параметры и правила маскирования. Для вывода без маскирования доступны `vars!`, `v!` и `var!`.
 
 ### Все переменные task
 
@@ -449,7 +449,7 @@ vars json_settings.limits.connections
 v application_servers.0.address
 ```
 
-Dot notation проходит по mappings и декодированным JSON objects. Числовые компоненты path индексируют lists и tuples. Если строка содержит корректный JSON object или array, она декодируется перед проходом по path и форматированным выводом.
+Dot notation проходит по mappings и декодированным JSON objects. Числовые компоненты path индексируют lists и tuples. Если строка содержит корректный JSON object или array, она декодируется перед проходом по path и форматированным выводом. Для ключей с символами вне имени переменной используйте квадратные скобки Jinja, например `v app_config['foo-bar']`.
 
 Метка host выводится всегда. По умолчанию используется inspection host из заголовка task. Другой host выбирается только явным параметром `host=NAME`:
 
@@ -460,24 +460,42 @@ v app_port host=web02 depth=1
 
 Позиционный синтаксис `vars app_port web02` не поддерживается: он неоднозначен, если имя host совпадает с именем переменной.
 
-### Glob и regexp
+### Выражения Jinja
 
-Glob задаётся непосредственно. `*` означает любое количество символов, `?` — один символ:
+После имени команды можно ввести выражение с фильтрами, функциями Ansible и несколькими переменными без `{{ }}`:
 
 ```text
-vars role_*
-v *port*
-vars role_?
+var app_password | length
+vars app_config.workers + 2
+v [app_root, app_config.workers] | to_json
+set tg test
+v groups[tg]              # список серверов группы test
+v groups[tg][0]           # первый сервер: test01
 ```
 
-Regexp всегда имеет явный префикс `regex=` и применяется к полному top-level имени через Python `fullmatch`:
+Выражение вычисляется в контексте выбранного host; параметры `host=HOST` и `depth=N` доступны как обычно. Lookup plugins отключены. Результат типа mapping маскируется по ключам, но вычисленное скалярное значение может раскрыть секрет. Не выводите секреты через выражения в журнал.
+
+### Glob и regexp
+
+Glob — простой шаблон для поиска имён переменных. Перед шаблоном обязателен префикс `glob=`, чтобы команда выполняла поиск имён. Сравнивается полное имя переменной верхнего уровня:
+
+```text
+v glob=role_*       # role_name, role_port: * — ноль или больше символов
+v glob=*port*       # app_port, role_port: port в любом месте имени
+v glob=role_?       # role_a, но не role_ab: ? — ровно один символ
+v glob=role_[ab]    # role_a и role_b: [ab] — один из указанных символов
+```
+
+Без `glob=` квадратные скобки означают индексацию Jinja. Например, `v groups[tg][0]` получает первый host группы, имя которой хранится в `tg`. Операторы тоже вычисляются как выражения: `v a*b` перемножает две переменные. Старую команду `v role_*` нужно заменить на `v glob=role_*`.
+
+Для регулярных выражений Python используется отдельный префикс `regex=`. Выражение должно совпасть с полным именем переменной верхнего уровня:
 
 ```text
 vars regex=^application_.*$
 v regex=^(role|application)_[a-z0-9_]+$
 ```
 
-Такой синтаксис не позволяет случайно принять glob за regexp. Patterns проверяют только top-level имена и не выполняют рекурсивный поиск вложенных ключей. Все совпавшие значения выводятся вместе.
+Поиск по glob и regexp показывает все совпавшие значения вместе; вложенные ключи он не просматривает.
 
 ### Неопределённые значения и неверный regexp
 
@@ -493,7 +511,7 @@ Invalid variable regexp: nothing to repeat at position 0
 
 ### Ограничение глубины вывода
 
-После сбора facts полный вывод может быть очень большим. Положительный параметр `depth=N` сворачивает вложенные контейнеры и работает одинаково для `vars` и `v`:
+После сбора facts полный вывод может быть очень большим. Положительный параметр `depth=N` сворачивает вложенные контейнеры и работает одинаково для `vars`, `v` и `var`:
 
 ```text
 vars depth=1
@@ -541,13 +559,13 @@ vars hostvars.web02.ansible_facts.python.version
 
 ### Маскирование секретов
 
-`vars` и `v` по умолчанию рекурсивно заменяют значения, ключи которых содержат распространённые признаки секрета: `password`, `passwd`, `secret`, `token`, `api_key`, `apikey` или `private_key`:
+`vars`, `v` и `var` по умолчанию рекурсивно заменяют значения, ключи которых содержат распространённые признаки секрета: `password`, `passwd`, `secret`, `token`, `api_key`, `apikey` или `private_key`:
 
 ```text
 'database_password': '*** HIDDEN ***'
 ```
 
-Отключение маскирования всегда должно быть явным. `vars!` и `v!` также являются полными alias:
+Отключение маскирования всегда должно быть явным. `vars!`, `v!` и `var!` также являются полными alias:
 
 ```text
 vars! app_config host=web02 depth=2
@@ -958,7 +976,7 @@ set release_code '"0012"'
 
 ### Время жизни и precedence
 
-Новое значение доступно команде `vars` (и её alias `v`), команде `args`, текущей ожидающей task и последующим task. Оно не записывается в inventory, variable files или playbook и исчезает после завершения процесса `ansible-playbook`.
+Новое значение доступно команде `vars` (и её alias `v` и `var`), команде `args`, текущей ожидающей task и последующим task. Оно не записывается в inventory, variable files или playbook и исчезает после завершения процесса `ansible-playbook`.
 
 Последующий `set_fact` или зарегистрированный результат может заменить значение. Extra vars, переданные через `-e`, и magic variables Ansible имеют более высокий приоритет и не могут быть переопределены этой командой.
 
@@ -978,7 +996,7 @@ set release_code '"0012"'
 1. Начните с одного host: `--limit web01 --step`.
 2. Прочитайте автоматический preview task до ввода команды выполнения.
 3. После сбора facts используйте `vars depth=1` для общего обзора.
-4. Сузьте исследование через `vars NAME`, `v PATH depth=N`, glob или явный `regex=REGEXP`.
+4. Сузьте исследование через `vars NAME`, `v PATH depth=N`, `glob=PATTERN` или явный `regex=REGEXP`.
 5. Используйте `when all` и `eval-all JINJA diff=true`, чтобы сравнить решения и значения между hosts.
 6. На task с loop используйте `loop all depth=N`, чтобы сравнить раскрытые items до выполнения.
 7. Используйте `args` для проверки templated-аргументов и `result all depth=2` для просмотра предыдущей task.
@@ -1001,7 +1019,7 @@ set release_code '"0012"'
 
 - автоматический preview исходного определения task;
 - `w`;
-- `vars` и `v`;
+- `vars`, `v` и `var`;
 - `loop`;
 - `result`;
 - `args`;
@@ -1015,7 +1033,7 @@ set release_code '"0012"'
 - `eval-lookup`;
 - `eval-all` и watches;
 - `raw`;
-- `vars!` и `v!`;
+- `vars!`, `v!` и `var!`;
 - `loop!`;
 - `result!`;
 - `args!`;
@@ -1068,7 +1086,7 @@ strategy: inspect_step
 
 ### Переменная или path не определены
 
-Выполните `vars depth=1` или используйте шаблон, например `v prefix_*` либо `vars regex=^prefix_.*$`, чтобы проверить top-level имя. Шаблоны ищут только top-level имена переменных.
+Выполните `vars depth=1` или используйте шаблон, например `v glob=prefix_*` либо `vars regex=^prefix_.*$`, чтобы проверить top-level имя. Шаблоны ищут только top-level имена переменных.
 
 ### `eval` не может вычислить выражение
 
@@ -1100,7 +1118,7 @@ set settings '{"enabled": true, "ports": [8080, 8081]}'
 
 ### `vars` неожиданно выбирает host
 
-Bare-аргумент, равный имени активного host, интерпретируется как HOST. Используйте явный вложенный path, например `hostvars.web02`, если hostname должен быть частью пути данных.
+Для выбора host нужен параметр `host=HOST`. Bare-имя host остаётся частью selector или выражения; для просмотра его данных используйте path `hostvars.web02`.
 
 ### Preview template не удаётся отрендерить
 
@@ -1218,7 +1236,7 @@ help
 ?
 ```
 
-### Переменные через `vars` и `v`
+### Переменные через `vars`, `v` и `var`
 
 ```text
 vars app_port
@@ -1230,15 +1248,17 @@ v app_port host=test02
 vars hostvars
 v hostvars host=test02
 vars hostvars.ansible_facts host=test02
-vars role_*
-v *port*
-vars role_?
+vars glob=role_*
+v glob=*port*
+vars glob=role_?
 v regex=^role_.*$
 vars regex=^(role|app)_[a-z0-9_]+$
 v regex=^backend_[0-9]+$
+var app_password | length
+var app_config.workers + host_app_port host=test02
 ```
 
-`vars` и `v` полностью эквивалентны. Glob и regexp проверяют только top-level имена; regexp требует префикс `regex=`. Поиск вложенных значений выполняется через dot-path, а не через pattern.
+`vars`, `v` и `var` полностью эквивалентны. Glob и regexp проверяют только top-level имена; используйте префикс `glob=` или `regex=`. Поиск вложенных значений выполняется через dot-path, а не через pattern.
 
 ```text
 vars
@@ -1253,7 +1273,7 @@ vars! app_config host=test02 depth=3
 v! app_config host=test02 depth=3
 ```
 
-Selector, `host=HOST` и `depth=N` можно располагать в любом порядке, если каждый параметр указан не более одного раза.
+Selector или выражение может содержать несколько слов. Параметры `host=HOST` и `depth=N` допускаются в любом порядке, но каждый только один раз.
 
 ### Runtime-изменение variables
 
@@ -1347,8 +1367,8 @@ g
 
 | Команда | Синтаксис | Способ совпадения | Пример |
 |---|---|---|---|
-| `vars`, `v` | glob | полное top-level имя variable | `v *port*` |
-| `vars`, `v` | `regex=` + Python regexp | полное top-level имя через `fullmatch` | `vars regex=^app_.*$` |
+| `vars`, `v`, `var` | `glob=` + pattern | полное top-level имя variable | `v glob=*port*` |
+| `vars`, `v`, `var` | `regex=` + Python regexp | полное top-level имя через `fullmatch` | `vars regex=^app_.*$` |
 | `break task` | Python regexp | поиск через `search` | `break task application` |
 | `break role` | точная строка | регистрозависимое равенство | `break role test_role` |
 | `break tag` | точная строка | регистрозависимое равенство | `break tag inspect_demo` |

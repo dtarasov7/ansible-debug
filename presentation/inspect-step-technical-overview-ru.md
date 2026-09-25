@@ -88,7 +88,7 @@ lang: ru-RU
 
 - **Выполнение:** `r/run`, `r!/run!`, `s/skip`, `c/continue`, `g/go`.
 - **Контекст:** `w`, `hosts`, `h/help/?`.
-- **Variables:** единая `vars/v`, явно немаскированная `vars!/v!`, `set`.
+- **Variables:** единая `vars/v/var`, выражения Jinja, явно немаскированные `vars!/v!/var!`, `set`.
 - **Вычисления:** `e/eval`, `eval-all`, `eval-lookup`, `when`.
 - **Preview:** `raw`, `args/args!`, `loop/loop!`, `loop eval/when/args/template`, `template`, `template-save`.
 - **Состояние:** `result/result!`, `watch add/list/delete`.
@@ -146,11 +146,14 @@ web02 (active for current task)
 # Variables: точка, структура, host
 
 ```text
-vars app_port                    # v — полный короткий alias
+vars app_port                    # v и var — короткие alias
 v app_config.workers depth=1
 vars hostvars.ansible_facts host=web02
-v role_*                         # glob top-level имён
+v glob=role_*                    # glob: * — любое количество символов
+v glob=role_[ab]                 # [ab] — один из двух символов
 vars regex=^(role|app)_[a-z0-9_]+$
+var app_password | length       # фильтр Ansible
+var app_config.workers + 2      # несколько значений
 
 vars depth=1                     # первый уровень всего контекста
 v ansible_facts host=web02 depth=2
@@ -160,7 +163,7 @@ v! app_config host=web02 depth=3 # без маскирования
 
 - У неявно выбранного host имя всё равно отображается.
 - JSON-строки со структурой форматируются как mappings/sequences.
-- `vars` и `v` используют один parser и маскируют секреты по умолчанию.
+- `vars`, `v` и `var` используют один parser; выражения вычисляются через Templar без lookups. Вычисленный скаляр может раскрыть секрет.
 - `depth=N` ограничивает объём вывода относительно выбранного path.
 
 # Временное изменение variable
