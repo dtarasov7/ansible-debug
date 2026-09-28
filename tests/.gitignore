@@ -1,0 +1,5 @@
+.local/
+.remote/
+.rendered-*
+*.log
+__pycache__/

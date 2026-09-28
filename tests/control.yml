@@ -1,0 +1,23 @@
+- hosts: all
+  gather_facts: false
+  strategy: "{{ inspector }}"
+  tasks:
+    - name: skip probe
+      fail:
+        msg: must not run
+    - name: include probe
+      include_tasks: included.yml
+    - name: no log probe
+      debug:
+        msg: revealed by operator
+      no_log: true
+    - name: set probe
+      assert:
+        that: inspector_value == 73
+    - name: final probe
+      debug:
+        msg: completed
+  handlers:
+    - name: included handler
+      debug:
+        msg: included handler ran

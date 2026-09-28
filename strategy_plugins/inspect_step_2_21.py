@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Provide an interactive task inspector for ansible-core 2.12-2.13.
+"""Provide an interactive task inspector for ansible-core 2.21.
 
-RU: Реализует интерактивный inspector task поверх linear strategy ansible-core 2.12-2.13.
+RU: Реализует интерактивный inspector task поверх linear strategy ansible-core 2.21.
 """
 
 from __future__ import absolute_import, division, print_function
@@ -28,25 +28,25 @@ else:
 
 from ansible import constants as C
 from ansible.errors import AnsibleError
-from ansible.executor.module_common import get_action_args_with_defaults
-from ansible.module_utils._text import to_bytes, to_text
+from ansible.executor.module_common import _apply_action_arg_defaults
+from ansible.module_utils.common.text.converters import to_bytes, to_text
 from ansible.module_utils.parsing.convert_bool import boolean
 from ansible.parsing.yaml.dumper import AnsibleDumper
 from ansible.playbook.block import Block
-from ansible.playbook.conditional import Conditional
+from ansible.playbook.handler import Handler
 from ansible.plugins.loader import lookup_loader
 from ansible.plugins.strategy.linear import StrategyModule as LinearStrategy
 from ansible.release import __version__ as ANSIBLE_VERSION
-from ansible.template import AnsibleEnvironment, Templar, generate_ansible_template_vars
-from ansible.utils.listify import listify_lookup_plugin_terms
-from ansible.utils.unsafe_proxy import wrap_var
+from ansible.template import Templar, trust_as_template
+from ansible._internal._templating._template_vars import generate_ansible_template_vars
+from unittest.mock import patch
 
 
 DOCUMENTATION = r'''
-    name: inspect_step
+    name: inspect_step_2_21
     short_description: Interactively inspect tasks before executing them
     description:
-      - Extends the ansible-core 2.12-2.13 linear strategy and its step hook.
+      - Extends the ansible-core 2.21 linear strategy and its step hook.
       - Allows task variables, expressions, and arguments to be inspected before queueing.
       - Explicitly evaluates trusted lookup expressions for one selected host.
       - Previews host-specific loop items and loop-control metadata without task execution.
@@ -57,8 +57,8 @@ DOCUMENTATION = r'''
       - Explicitly executes one selected task with task-level no_log disabled.
     author: Custom
     notes:
-      - Technical compatibility is ansible-core 2.12-2.13.
-      - The primary tested version is ansible-core 2.13.13.
+      - Technical compatibility is ansible-core 2.21.
+      - The primary tested version is ansible-core 2.21.4.
       - Run ansible-playbook with C(--step) to enable the inspector.
 '''
 
@@ -66,9 +66,9 @@ DOCUMENTATION = r'''
 HIDDEN_VALUE = '*** HIDDEN ***'
 PATH_UNDEFINED = object()
 VERSION = '2.1.0'
-PRIMARY_TESTED_ANSIBLE_VERSION = '2.13.13'
-MINIMUM_ANSIBLE_VERSION = (2, 12)
-MAXIMUM_ANSIBLE_VERSION = (2, 14)
+PRIMARY_TESTED_ANSIBLE_VERSION = '2.21.4'
+MINIMUM_ANSIBLE_VERSION = (2, 21)
+MAXIMUM_ANSIBLE_VERSION = (2, 22)
 _VERSION_DISPLAYED = False
 TEMPLATE_ACTIONS = (
     'template',
@@ -331,8 +331,8 @@ class StrategyModule(LinearStrategy):
     RU: Добавляет интерактивный inspector перед task в linear strategy Ansible.
 
     The implementation relies on private step, result, and iterator APIs from
-    ansible-core 2.12-2.13. / Реализация использует внутренние API step, result и
-    iterator из ansible-core 2.12-2.13.
+    ansible-core 2.21. / Реализация использует внутренние API step, result и
+    iterator из ansible-core 2.21.
     """
 
     def __init__(self, tqm):
@@ -348,8 +348,7 @@ class StrategyModule(LinearStrategy):
             None: Initialization is performed in place. / Состояние создаётся in place.
 
         Raises / Исключения:
-            AnsibleError: ansible-core 2.14 or newer uses incompatible internal APIs. /
-                ansible-core 2.14+ использует несовместимые внутренние API.
+            AnsibleError: Installed ansible-core is outside the supported range.
         """
         super(StrategyModule, self).__init__(tqm)
         global _VERSION_DISPLAYED
@@ -380,60 +379,14 @@ class StrategyModule(LinearStrategy):
         self._inspect_run_all_flushing_handlers = False
 
     def _check_ansible_version(self):
-        """Report compatibility and reject known-incompatible ansible-core versions.
-
-        RU: Выводит статус совместимости и отклоняет несовместимые версии ansible-core.
-
-        Returns / Возвращает:
-            None: Compatibility is reported through Ansible Display. /
-                Статус выводится через Ansible Display.
-
-        Raises / Исключения:
-            AnsibleError: Parsed version is 2.14 or newer. / Версия не ниже 2.14.
-        """
-        version = to_text(ANSIBLE_VERSION)
-        major_minor = _ansible_major_minor(version)
-
-        if major_minor is None:
-            self._display.warning(
-                'inspect_step cannot determine compatibility with ansible-core %s. '
-                'Technical compatibility: ansible-core 2.12-2.13; primary tested '
-                'version: ansible-core %s. Continuing without a compatibility guarantee.'
-                % (version, PRIMARY_TESTED_ANSIBLE_VERSION)
-            )
-            return
-
-        if major_minor < MINIMUM_ANSIBLE_VERSION:
-            self._display.warning(
-                'inspect_step has partial compatibility with ansible-core %s. This '
-                'version is older than the technical compatibility range 2.12-2.13. '
-                'Task execution controls may work, but inspection commands that need '
-                'task variables may be unavailable. Use ansible-core 2.12 or 2.13; '
-                'the primary tested version is %s.'
-                % (version, PRIMARY_TESTED_ANSIBLE_VERSION)
-            )
-            return
-
-        if major_minor >= MAXIMUM_ANSIBLE_VERSION:
+        """Reject releases outside this standalone implementation's API range."""
+        version = _ansible_major_minor(ANSIBLE_VERSION)
+        if version is None or not MINIMUM_ANSIBLE_VERSION <= version < MAXIMUM_ANSIBLE_VERSION:
             raise AnsibleError(
-                'inspect_step is incompatible with ansible-core %s. Technical '
-                'compatibility: ansible-core 2.12-2.13; primary tested version: '
-                'ansible-core %s. Ansible internal strategy APIs changed in 2.14. '
-                'Install ansible-core 2.12 or 2.13 to use this strategy plugin.'
-                % (version, PRIMARY_TESTED_ANSIBLE_VERSION)
+                'This inspect_step variant requires ansible-core 2.21; detected %s.'
+                % ANSIBLE_VERSION
             )
-
-        if version == PRIMARY_TESTED_ANSIBLE_VERSION:
-            self._display.display(
-                'Ansible compatibility: ansible-core %s is the primary tested version '
-                '(technical range 2.12-2.13).' % version
-            )
-        else:
-            self._display.display(
-                'Ansible compatibility: ansible-core %s is within the technical range '
-                '2.12-2.13 (primary tested version: %s).'
-                % (version, PRIMARY_TESTED_ANSIBLE_VERSION)
-            )
+        self._display.display('Ansible compatibility: ansible-core %s (2.21)' % ANSIBLE_VERSION)
 
     def _get_next_task_lockstep(self, hosts, iterator):
         """Remember hosts and iterator states for the next lockstep task.
@@ -452,6 +405,8 @@ class StrategyModule(LinearStrategy):
         self._inspect_no_log_overrides.clear()
         self._ensure_task_catalog(iterator)
         host_tasks = super(StrategyModule, self)._get_next_task_lockstep(hosts, iterator)
+        if any(task is not None and not isinstance(task, Handler) for _, task in host_tasks):
+            self._inspect_run_all_flushing_handlers = False
         hosts_by_task = {}
         for host, task in host_tasks:
             if task is not None:
@@ -515,7 +470,7 @@ class StrategyModule(LinearStrategy):
                 target_host,
             )
         finally:
-            self._inspect_run_all_flushing_handlers = False
+            self._inspect_run_all_flushing_handlers = run_all_flush
 
     def _is_dynamic_include(self, task):
         """Return whether a task is a runtime ``include_tasks`` or ``include_role``.
@@ -955,7 +910,7 @@ class StrategyModule(LinearStrategy):
             bool: ``True`` when restored, ``False`` when no snapshot exists. /
                 ``True`` при восстановлении, иначе ``False``.
         """
-        task = task_result._task
+        task = task_result.task
         host_name = host.get_name()
         saved_state = self._inspect_host_states.get((task._uuid, host_name))
         if saved_state is None:
@@ -975,13 +930,13 @@ class StrategyModule(LinearStrategy):
             self._tqm._stats.decrement('failures', host_name)
             self._tqm._stats.increment('ok', host_name)
             self._tqm._stats.increment('ignored', host_name)
-            if task_result.is_changed():
+            if task_result.utr.changed:
                 self._tqm._stats.increment('changed', host_name)
 
         self._display.display('CONTINUE HOST: %s (task failure ignored)' % host_name)
         return True
 
-    def _process_pending_results(self, iterator, one_pass=False, max_passes=None, do_handlers=False):
+    def _process_pending_results(self, iterator, one_pass=False, max_passes=None):
         """Process worker results and apply the selected failure-recovery action.
 
         RU: Обрабатывает worker results и применяет выбранное восстановление после failure.
@@ -990,8 +945,6 @@ class StrategyModule(LinearStrategy):
             iterator (PlayIterator): Active play iterator. / Активный iterator play.
             one_pass (bool): Request one parent processing pass. / Один проход обработки.
             max_passes (int or None): Parent pass limit. / Лимит проходов parent strategy.
-            do_handlers (bool): Whether handler results are being processed. /
-                Обрабатываются ли results handlers.
 
         Returns / Возвращает:
             list: Task results returned by the parent strategy. /
@@ -1001,13 +954,12 @@ class StrategyModule(LinearStrategy):
             iterator,
             one_pass=one_pass,
             max_passes=max_passes,
-            do_handlers=do_handlers,
         )
-        if not do_handlers and self._inspect_failure_prompt_enabled:
+        if self._inspect_failure_prompt_enabled:
             for task_result in results:
-                task = task_result._task
-                host = task_result._host
-                if not task_result.is_failed() or task.ignore_errors or not iterator.is_failed(host):
+                task = task_result.task
+                host = task_result.host
+                if not task_result.utr.failed or task_result.utr.ignore_errors or not iterator.is_failed(host):
                     continue
 
                 # EN: One operator decision applies to every failed host in this task batch.
@@ -1034,43 +986,6 @@ class StrategyModule(LinearStrategy):
         self._record_task_results(results)
 
         return results
-
-    def _do_handler_run(self, handler, handler_name, iterator, play_context, notified_hosts=None):
-        """Apply the same pre-queue inspector to notified handlers.
-
-        RU: Применяет тот же inspector перед постановкой notified handlers в очередь.
-
-        Args / Параметры:
-            handler (Task): Handler task. / Task handler.
-            handler_name (str): Display name. / Отображаемое имя.
-            iterator (PlayIterator): Active iterator. / Активный iterator.
-            play_context (PlayContext): Current execution context. / Контекст выполнения.
-            notified_hosts (list or None): Explicit notified hosts. / Явный список hosts.
-
-        Returns / Возвращает:
-            object: Parent result, or ``True`` when the handler was skipped. /
-                Parent result либо ``True`` при пропуске handler.
-        """
-        hosts = notified_hosts[:] if notified_hosts is not None else handler.notified_hosts[:]
-        failed_or_unreachable = set(self._tqm._failed_hosts).union(
-            self._tqm._unreachable_hosts
-        )
-        hosts = [host for host in hosts if host.get_name() not in failed_or_unreachable]
-        for handler_host in hosts:
-            self._record_task_catalog(handler, host=handler_host, runtime=True)
-        if self._step and hosts and not self._inspect_run_all_flushing_handlers:
-            self._inspect_hosts_by_task = {handler._uuid: hosts}
-            if not self._take_step(handler):
-                handler.notified_hosts = [host for host in handler.notified_hosts if host not in hosts]
-                return True
-
-        return super(StrategyModule, self)._do_handler_run(
-            handler,
-            handler_name,
-            iterator,
-            play_context,
-            notified_hosts=notified_hosts,
-        )
 
     def _hosts_for_task(self, task, host=None):
         """Resolve the host batch controlled by one inspector prompt.
@@ -1174,23 +1089,23 @@ class StrategyModule(LinearStrategy):
         self._display.display(rendered)
 
     def _result_status(self, task_result):
-        if task_result.is_unreachable():
+        if task_result.utr.unreachable:
             return 'unreachable'
-        if task_result.is_failed():
-            task = task_result._task
+        if task_result.utr.failed:
+            task = task_result.task
             recovery = self._inspect_failure_actions.get(task._uuid)
-            if task.ignore_errors or recovery in ('ignore', 'continue'):
+            if task_result.utr.ignore_errors or recovery in ('ignore', 'continue'):
                 return 'ignored'
             return 'failed'
-        if task_result.is_skipped():
+        if task_result.utr.skipped:
             return 'skipped'
-        if task_result.is_changed():
+        if task_result.utr.changed:
             return 'changed'
         return 'ok'
 
     def _record_task_results(self, results):
         for task_result in results:
-            task = task_result._task
+            task = task_result.task
             if (
                 self._inspect_last_result is None
                 or self._inspect_last_result['task_uuid'] != task._uuid
@@ -1201,7 +1116,7 @@ class StrategyModule(LinearStrategy):
                     'hosts': {},
                 }
 
-            raw_result = task_result._result
+            raw_result = task_result.utr.as_result_dict()
             if isinstance(raw_result, Mapping):
                 visible_result = {
                     key: value
@@ -1210,7 +1125,7 @@ class StrategyModule(LinearStrategy):
                 }
             else:
                 visible_result = raw_result
-            self._inspect_last_result['hosts'][task_result._host.get_name()] = {
+            self._inspect_last_result['hosts'][task_result.host.get_name()] = {
                 'status': self._result_status(task_result),
                 'value': visible_result,
             }
@@ -1659,11 +1574,13 @@ class StrategyModule(LinearStrategy):
             return False, 'task variables are unavailable'
         try:
             templar = Templar(loader=self._loader, variables=task_vars)
-            value = templar.template(
-                expression,
-                fail_on_undefined=True,
-                disable_lookups=disable_lookups,
-            )
+            if disable_lookups:
+                with patch.object(lookup_loader, 'get', side_effect=AnsibleError(
+                    'Lookups are disabled for this inspection command; use eval-lookup.'
+                )):
+                    value = templar.template(trust_as_template(expression))
+            else:
+                value = templar.template(trust_as_template(expression))
         except Exception as exc:
             return False, to_text(exc)
         return True, _parse_json_structure(value)
@@ -1887,12 +1804,8 @@ class StrategyModule(LinearStrategy):
         templated_args = templar.template(task.args)
         # EN: Mirror the template action plugin before reading src or rendering content.
         # RU: Повторяем обработку template action plugin до чтения src и rendering.
-        templated_args = get_action_args_with_defaults(
-            task.resolved_action or task.action,
-            templated_args,
-            task.module_defaults,
-            templar,
-            action_groups=getattr(task.play, '_action_groups', {}),
+        templated_args = _apply_action_arg_defaults(
+            task.resolved_action or task.action, task, templated_args, templar,
         )
         source_name = templated_args.get('src')
         destination = templated_args.get('dest')
@@ -1931,27 +1844,36 @@ class StrategyModule(LinearStrategy):
 
             template_vars = task_vars.copy()
             template_vars.update(
-                generate_ansible_template_vars(source_name, source_path, destination)
+                generate_ansible_template_vars(
+                    source_name, source_path, destination,
+                    include_ansible_managed='ansible_managed' not in template_vars,
+                )
             )
-            template_templar = templar.copy_with_new_env(
-                environment_class=AnsibleEnvironment,
-                searchpath=include_search_path,
+            overrides = {
+                key: templated_args[key]
+                for key in (
+                    'block_start_string', 'block_end_string',
+                    'variable_start_string', 'variable_end_string',
+                    'comment_start_string', 'comment_end_string',
+                ) if templated_args.get(key) is not None
+            }
+            overrides.update(
                 newline_sequence=newline_sequence,
-                block_start_string=templated_args.get('block_start_string'),
-                block_end_string=templated_args.get('block_end_string'),
-                variable_start_string=templated_args.get('variable_start_string'),
-                variable_end_string=templated_args.get('variable_end_string'),
-                comment_start_string=templated_args.get('comment_start_string'),
-                comment_end_string=templated_args.get('comment_end_string'),
                 trim_blocks=boolean(templated_args.get('trim_blocks', True), strict=False),
                 lstrip_blocks=boolean(templated_args.get('lstrip_blocks', False), strict=False),
+            )
+            template_templar = templar.copy_with_new_env(
+                searchpath=include_search_path,
                 available_variables=template_vars,
             )
-            content = template_templar.do_template(
-                template_data,
+            content = template_templar.template(
+                trust_as_template(template_data),
                 preserve_trailing_newlines=True,
                 escape_backslashes=False,
+                overrides=overrides,
             )
+            if content is None:
+                content = ''
         finally:
             # EN: get_real_file may materialize a temporary decrypted source.
             # RU: get_real_file может создать временный расшифрованный source.
@@ -2153,11 +2075,9 @@ class StrategyModule(LinearStrategy):
                     % (index, condition_text)
                 )
                 continue
-            evaluator = Conditional(loader=self._loader)
-            evaluator.when = [condition]
             templar = Templar(loader=self._loader, variables=task_vars)
             try:
-                matched = bool(evaluator.evaluate_conditional(templar, task_vars))
+                matched = templar.evaluate_conditional(condition)
             except Exception as exc:
                 self._display.display(
                     '  %d. ERROR: %s\n     %s'
@@ -2241,35 +2161,28 @@ class StrategyModule(LinearStrategy):
                     "Unexpected failure in finding the lookup named '%s'"
                     % task.loop_with
                 )
-            fail_on_undefined = task.loop_with != 'first_found'
-            loop_terms = listify_lookup_plugin_terms(
-                terms=task.loop,
-                templar=templar,
-                loader=self._loader,
-                fail_on_undefined=fail_on_undefined,
-                convert_bare=False,
-            )
-            if not fail_on_undefined:
-                loop_terms = [term for term in loop_terms if not templar.is_template(term)]
+            from ansible._internal._templating._jinja_plugins import _invoke_lookup, _DirectCall
 
-            lookup = lookup_loader.get(
-                task.loop_with,
-                loader=self._loader,
-                templar=templar,
-            )
-            subdir = 'file'
-            for candidate in ('template', 'var', 'file'):
-                subdir = candidate
-                if candidate in task.action:
-                    break
-            setattr(lookup, '_subdir', subdir + 's')
-            items = wrap_var(
-                lookup.run(
-                    terms=loop_terms,
-                    variables=preview_vars,
-                    wantlist=True,
+            terms = task.loop
+            if isinstance(terms, str):
+                terms = templar.template(terms.strip())
+            if not isinstance(terms, list):
+                terms = [terms]
+
+            @_DirectCall.mark
+            def invoke_lookup():
+                return _invoke_lookup(
+                    plugin_name=task.loop_with,
+                    lookup_terms=terms,
+                    lookup_kwargs={'wantlist': True},
+                    invoked_as_with=True,
                 )
+
+            items = templar.evaluate_expression(
+                trust_as_template('invoke_lookup()'),
+                local_variables={'invoke_lookup': invoke_lookup},
             )
+
         else:
             items = templar.template(task.loop)
             if not isinstance(items, list):
@@ -2600,7 +2513,7 @@ class StrategyModule(LinearStrategy):
             if label is not None:
                 templar.available_variables = item_vars
                 try:
-                    label_value = templar.template(label, cache=False)
+                    label_value = templar.template(label)
                 except Exception as exc:
                     label_value = '<label error: %s>' % to_text(exc)
                 if not reveal_secrets and _key_contains_secret(label):
@@ -2978,6 +2891,8 @@ class StrategyModule(LinearStrategy):
             EOF safely skips the task; command errors stay in the same prompt. /
                 EOF безопасно пропускает task; ошибки команд не закрывают prompt.
         """
+        if isinstance(task, Handler) and self._inspect_run_all_flushing_handlers:
+            return True
         if self._inspect_run_all_include is not None:
             include_scope = self._inspect_run_all_include
             if self._is_within_include(task, include_scope['uuid']):

@@ -1,0 +1,9 @@
+- name: included child
+  debug:
+    msg: child ran
+  changed_when: true
+  notify: included handler
+- meta: flush_handlers
+- name: included tail
+  debug:
+    msg: tail ran

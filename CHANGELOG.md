@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-28
+
+### Added
+
+- Standalone strategy variants for ansible-core 2.14–2.18, 2.19–2.20 and 2.21, with strict version gates, adapted handler/result APIs, modern template trust and lookup blocking.
+- Interactive two-host compatibility checks and a reproducible variant generator; the original 2.12–2.13 file is unchanged.
+
 ## [2.0.0] - 2026-09-25
 
 ### Changed

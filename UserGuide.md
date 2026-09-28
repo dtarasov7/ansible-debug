@@ -2,7 +2,7 @@
 
 [English](UserGuide.md) | [Русский](UserGuide-ru.md)
 
-This guide describes installation, daily use, variable inspection, runtime variable changes, security considerations, and troubleshooting for `inspect_step` version 2.0.0.
+This guide describes installation, daily use, variable inspection, runtime variable changes, security considerations, and troubleshooting for `inspect_step` version 2.1.0.
 
 ## 1. Purpose
 
@@ -29,19 +29,14 @@ The plugin extends Ansible's `linear` strategy. Inventory processing, variable p
 
 ## 2. Supported environment
 
-The technical compatibility range is:
+| ansible-core | Standalone file / strategy name |
+| --- | --- |
+| 2.12–2.13 | `inspect_step.py` / `inspect_step` (unchanged) |
+| 2.14–2.18 | `inspect_step_2_14.py` / `inspect_step_2_14` |
+| 2.19–2.20 | `inspect_step_2_19.py` / `inspect_step_2_19` |
+| 2.21 | `inspect_step_2_21.py` / `inspect_step_2_21` |
 
-```text
-ansible-core >= 2.12.0, < 2.14
-```
-
-The primary tested version is `ansible-core 2.13.13`. The plugin relies on internal strategy APIs whose compatibility is not guaranteed by Ansible.
-
-At startup, the plugin checks the detected `ansible-core` version:
-
-- 2.12 and 2.13 continue with a compatibility status;
-- versions older than 2.12 continue with an explicit partial-compatibility warning because task-variable inspection may be unavailable;
-- 2.14 and newer stop immediately with an incompatibility error and recommend installing 2.12 or 2.13.
+Files are in `strategy_plugins/` and are standalone. Copy the matching file and select the strategy from the table. For newer versions, replace `strategy: inspect_step` in the examples below with the matching name. New variants reject versions outside their range; the original file is unchanged. See [tests/README.md](tests/README.md) for tested versions and commands.
 
 Python must be compatible with the installed Ansible release. Python's standard `readline` module is optional; it is required only for interactive history and cursor-based line editing.
 
@@ -120,7 +115,7 @@ ansible-playbook -i inventory playbook.yml --limit web --step
 At strategy initialization, the following line is printed once per `ansible-playbook` process:
 
 ```text
-inspect_step version 2.0.0
+inspect_step version 2.1.0
 Ansible compatibility: ansible-core 2.13.13 is the primary tested version (technical range 2.12-2.13).
 ```
 
@@ -1128,7 +1123,7 @@ If `template-save` reports that the local file already exists, choose a new path
 
 ## 18. Limitations
 
-- Technical compatibility is limited to `ansible-core 2.12.x` and 2.13.x; the primary tested version is 2.13.13.
+- Use the file matching your ansible-core version in section 2; internal APIs differ between releases.
 - Check-mode accuracy depends on each module and plugin; `changed` is a prediction, unsupported modules may skip, and registered values can differ from a normal run.
 - `--check` does not suppress `check_mode: false`, controller-side lookup/plugin effects, in-memory `set` changes, or local files created by `template-save`.
 - The inspector stops once per task, not once per loop item.

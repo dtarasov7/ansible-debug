@@ -4,10 +4,16 @@
 
 `inspect_step` is an interactive strategy plugin for debugging Ansible playbooks and roles before each task is executed. It extends Ansible's `linear` strategy.
 
-Current version: **2.0.0**.
+Current version: **2.1.0**.
 
-Technical compatibility: **ansible-core 2.12–2.13**.  
-Primary tested version: **ansible-core 2.13.13**.
+Choose the implementation for your installed **ansible-core** version:
+
+| ansible-core | Standalone file / strategy name |
+| --- | --- |
+| 2.12–2.13 | `inspect_step.py` / `inspect_step` (unchanged) |
+| 2.14–2.18 | `inspect_step_2_14.py` / `inspect_step_2_14` |
+| 2.19–2.20 | `inspect_step_2_19.py` / `inspect_step_2_19` |
+| 2.21 | `inspect_step_2_21.py` / `inspect_step_2_21` |
 
 ## Main features
 
@@ -34,15 +40,17 @@ Primary tested version: **ansible-core 2.13.13**.
 
 ## Requirements
 
-- `ansible-core >= 2.12.0, < 2.14`;
+- `ansible-core >= 2.12.0, < 2.22`;
 - a Python version supported by the installed Ansible release;
 - interactive standard input for command-line editing.
 
-At startup, the plugin reports the detected Ansible version. Versions older than 2.12 produce a partial-compatibility warning because inspection commands that need task variables may be unavailable. Version 2.14 or newer stops immediately with a clear incompatibility error instead of failing later in an internal strategy API.
+Each new variant strictly checks its own version range at startup. The original `inspect_step.py` remains for 2.12–2.13. Plugin compatibility does not imply that an Ansible release is still maintained.
 
 ## Quick start
 
-Copy `strategy_plugins/inspect_step.py` into your Ansible project and configure the plugin path:
+Copy the matching standalone file from `strategy_plugins/` into your Ansible project and configure the plugin path:
+
+For newer versions, copy **one matching file** from the table into `strategy_plugins/` and use its filename without `.py` as the strategy. For example, on 2.19–2.20 use `strategy: inspect_step_2_19`. Each file is standalone; sibling implementations are unnecessary. The `inspect_step` example below applies to 2.12–2.13.
 
 ```ini
 [defaults]
@@ -67,7 +75,7 @@ Run the playbook with `--step`:
 ansible-playbook -i inventory playbook.yml --limit web01 --step
 ```
 
-At startup, the plugin prints `inspect_step version 2.0.0` and the Ansible compatibility status. Before each executable task it displays the task definition and opens the `inspect-step>` prompt.
+At startup, the plugin prints `inspect_step version 2.1.0` and the Ansible compatibility status. Before each executable task it displays the task definition and opens the `inspect-step>` prompt.
 
 ## Essential commands
 
@@ -140,3 +148,5 @@ Secret masking is heuristic. `r!`, `run!`, `eval`, `eval-lookup`, `eval-all`, wa
 ## License
 
 [MIT](LICENSE)
+
+[Compatibility checks and test instructions](tests/README.md).
