@@ -1,0 +1,91 @@
+- hosts: all
+  gather_facts: false
+  strategy: "{{ inspector }}"
+  tasks:
+    - name: order first
+      debug:
+        msg: order first ran
+      changed_when: true
+      notify: final handler
+      tags: chosen
+
+    - name: excluded before block
+      fail:
+        msg: excluded task must not run
+      tags: other
+
+    - name: fatal decision
+      fail:
+        msg: intentional unhandled failure
+      when: order_mode == 'fatal'
+      tags: chosen
+
+    - block:
+        - name: branch decision
+          fail:
+            msg: intentional rescued failure
+          when: order_mode == 'rescue' or (order_mode == 'split' and inventory_hostname == 'first')
+          tags: chosen
+        - name: abandoned regular
+          fail:
+            msg: excluded regular task must not run
+          tags: other
+        - name: branch success
+          debug:
+            msg: branch success ran
+          tags: chosen
+        - name: regular tail
+          fail:
+            msg: excluded regular tail must not run
+          tags: other
+      rescue:
+        - name: rescue prefix
+          fail:
+            msg: excluded rescue prefix must not run
+          tags: other
+        - name: rescue anchor
+          debug:
+            msg: rescue anchor ran
+          tags: chosen
+        - name: rescue tail
+          fail:
+            msg: excluded rescue tail must not run
+          tags: other
+      always:
+        - name: always prefix
+          fail:
+            msg: excluded always prefix must not run
+          tags: other
+        - name: always anchor
+          debug:
+            msg: always anchor ran
+          tags: chosen
+        - name: always tail
+          fail:
+            msg: excluded always tail must not run
+          tags: other
+
+    - name: order end
+      meta: end_play
+      when: order_mode == 'end'
+      tags: chosen
+
+    - name: excluded after stop
+      fail:
+        msg: excluded after stop must not run
+      tags: other
+
+    - name: after stop anchor
+      debug:
+        msg: after stop anchor ran
+      tags: chosen
+
+    - name: excluded trailing
+      fail:
+        msg: excluded trailing must not run
+      tags: other
+
+  handlers:
+    - name: final handler
+      debug:
+        msg: final handler ran

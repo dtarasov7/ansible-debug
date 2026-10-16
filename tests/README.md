@@ -11,7 +11,8 @@
 Проверки выполнялись в Docker с Python 3.12 на двух локальных inventory hosts.
 Дополнительно проверен запуск `check_compat.py inspect_step_2_21 --check`.
 Это тесты интеграции плагина, не сертификация всех возможностей Ansible и collections.
-Исходная реализация `inspect_step.py` для 2.12–2.13 не изменена.
+Исходная реализация `inspect_step.py` для 2.12–2.13 служит источником общих команд
+и диагностики; изменения распространяются генератором во все варианты.
 
 `check_compat.py` проверяет загрузку стратегии, выражения, запрет/разрешение lookup,
 variables, args, watches, loop и with_items, label/index/extended metadata,
@@ -34,6 +35,8 @@ python3 -m venv .venv
 PATH="$PWD/.venv/bin:$PATH" python tests/check_compat.py inspect_step_2_21
 PATH="$PWD/.venv/bin:$PATH" python tests/check_control.py inspect_step_2_21
 PATH="$PWD/.venv/bin:$PATH" python tests/check_expressions.py inspect_step_2_21
+PATH="$PWD/.venv/bin:$PATH" python tests/check_skips.py inspect_step_2_21
+PATH="$PWD/.venv/bin:$PATH" python tests/check_tag_order.py inspect_step_2_21
 ```
 
 Для других версий замените pin и имя стратегии по таблице. Проверки используют
@@ -52,6 +55,30 @@ python3 tests/build_variants.py
 Изменения совместимости вносите в генератор и повторно запускайте тесты.
 При изменении старого файла также пересоздавайте и проверяйте варианты.
 В новых реализациях не используются runtime-импорты соседних файлов.
+
+`check_skips.py` проверяет немедленный вывод причин `when`, пустого и смешанного loop,
+ручного skip и скрытие результатов `no_log`, включая отсутствие дубликатов.
+Проверяются запуск и интерактивное переключение `tag-skips`, фильтрация статических
+imports/roles, наследуемых и шаблонных тегов, секций rescue/always, dynamic includes
+и roles, бирюзовый цвет и работа при
+`display_skipped_hosts=false`. Выполнение без `--step` с включённой и выключенной
+диагностикой сравнивается с `linear` по recap на двух hosts.
+
+`check_skips.py` также проверяет порядок вывода между результатами и prompts,
+пропуски в конце dynamic include и play, отсутствие истории при переключении.
+`check_tag_order.py` проверяет активные/неактивные ветки rescue, always,
+пропуски оставшейся обычной ветки после failure, `--start-at-task`, `end_play`
+и необработанную ошибку, в том числе разные ветки на двух hosts. Пропуски в конце
+списка проверяются до автоматического запуска handlers. Для каждого случая recap
+сравнивается с `linear`.
+
+Диагностика пропусков проверена на ansible-core 2.12.10, 2.13.13, 2.14.18,
+2.18.19, 2.19.13, 2.20.9 и 2.21.4. Для 2.12–2.13 использовался Python 3.8,
+для остальных — Docker с Python 3.12. Существующие интеграции команд и управления
+выполнением также прошли на 2.13.13, 2.14.18, 2.18.19, 2.19.13, 2.20.9 и 2.21.4;
+на 2.21.4 дополнительно проверен `--check`. Отдельный `check_expressions.py`
+требует `init_plugin_loader` и не запускается на 2.14.18; проверки этого скрипта
+прошли на 2.18.19, 2.19.13, 2.20.9 и 2.21.4.
 
 ## Основания для разделения
 

@@ -15,6 +15,7 @@ import pprint
 import re
 import shlex
 from collections.abc import Mapping
+from unittest.mock import patch
 
 import yaml
 
@@ -27,6 +28,7 @@ else:
         _readline.set_auto_history(True)
 
 from ansible import constants as C
+from ansible import context
 from ansible.errors import AnsibleError
 from ansible.executor.module_common import get_action_args_with_defaults
 from ansible.module_utils._text import to_bytes, to_text
@@ -55,17 +57,20 @@ DOCUMENTATION = r'''
       - Executes dynamic include trees without intermediate task stops when requested.
       - Browses compiled and runtime-expanded tasks and selects exact task breakpoints.
       - Explicitly executes one selected task with task-level no_log disabled.
+      - Immediately displays skipped task and loop-item results with available reasons.
+      - Optionally displays tasks excluded by tags, including dynamic include children.
     author: Custom
     notes:
       - Technical compatibility is ansible-core 2.12-2.13.
       - The primary tested version is ansible-core 2.13.13.
       - Run ansible-playbook with C(--step) to enable the inspector.
+      - Set C(ANSIBLE_INSPECT_SHOW_TAG_SKIPS=true) or use C(tag-skips on) to show tag exclusions.
 '''
 
 
 HIDDEN_VALUE = '*** HIDDEN ***'
 PATH_UNDEFINED = object()
-VERSION = '2.1.0'
+VERSION = '2.3.0'
 PRIMARY_TESTED_ANSIBLE_VERSION = '2.13.13'
 MINIMUM_ANSIBLE_VERSION = (2, 12)
 MAXIMUM_ANSIBLE_VERSION = (2, 14)
@@ -124,6 +129,7 @@ HELP_TEXT = '''Commands:
                         show the previous task result with secrets masked
   result! [HOST|all] [depth=N]
                         same, including secrets
+  tag-skips [on|off]     show or hide tasks excluded by --tags/--skip-tags
   watch add EXPRESSION [host=HOST]
   watch list | watch delete ID
                         manage expressions shown at every interactive stop
@@ -378,6 +384,204 @@ class StrategyModule(LinearStrategy):
         self._inspect_go = False
         self._inspect_run_all_include = None
         self._inspect_run_all_flushing_handlers = False
+        self._inspect_enabled = self._step
+        self._inspect_show_tag_skips = boolean(
+            os.environ.get('ANSIBLE_INSPECT_SHOW_TAG_SKIPS', 'false'), strict=True,
+        )
+        self._inspect_tag_tasks = []
+        self._inspect_tag_positions = {}
+        self._inspect_tag_cursor = 0
+        self._inspect_tag_insert_at = 0
+        self._inspect_tag_previous = None
+        self._inspect_skipped_items = set()
+
+    def run(self, iterator, play_context):
+        """Report skips without changing Ansible's task selection or callbacks to logs.
+
+        RU: Показывает пропуски без изменения отбора task и callbacks журналирования.
+        """
+        if not self._inspect_enabled and not self._inspect_show_tag_skips:
+            return super(StrategyModule, self).run(iterator, play_context)
+
+        selected = {task._uuid for task in self._iter_block_tasks(iterator._blocks)}
+        self._schedule_tag_tasks(
+            iterator._play.compile(), selected, iterator._play,
+            implicit_tasks=[task for task in self._iter_block_tasks(iterator._blocks)
+                            if task.implicit],
+        )
+        if any(state.did_start_at_task for state in iterator._host_states.values()):
+            start = context.CLIARGS.get('start_at_task')
+            for index, (task, details, path) in enumerate(self._inspect_tag_tasks):
+                if details is None and start and any(
+                    fnmatch.fnmatch(name, start) for name in (task.name or '', task.get_name())
+                ):
+                    self._inspect_tag_cursor = index
+                    break
+        original_filter = Block.filter_tagged_tasks
+
+        def filter_with_diagnostics(block, all_vars):
+            filtered = original_filter(block, all_vars)
+            selected = {task._uuid for task in self._iter_block_tasks([filtered])}
+            self._schedule_tag_tasks([block], selected, block._play)
+            return filtered
+
+        # Only the screen callback is replaced. Ansible still sends its usual events
+        # to all other callbacks, and restores these methods even after an error.
+        stdout = self._tqm._stdout_callback
+        with patch.object(Block, 'filter_tagged_tasks', filter_with_diagnostics):
+            if self._inspect_enabled:
+                with patch.object(stdout, 'v2_runner_on_skipped', self._show_skipped_result), \
+                        patch.object(stdout, 'v2_runner_item_on_skipped', self._show_skipped_item_result):
+                    return super(StrategyModule, self).run(iterator, play_context)
+            return super(StrategyModule, self).run(iterator, play_context)
+
+    def _iter_block_tasks(self, blocks):
+        """Walk all block sections, including statically expanded imports."""
+        for item in blocks:
+            if isinstance(item, Block):
+                for section in ('block', 'rescue', 'always'):
+                    yield from self._iter_block_tasks(getattr(item, section))
+            else:
+                yield item
+
+    def _schedule_tag_tasks(self, blocks, selected, play, implicit_tasks=None):
+        """Keep source order alongside the real queue without changing its tasks."""
+        entries = []
+        implicit = iter(implicit_tasks or [])
+
+        def walk(items, path=()):
+            for task in items:
+                if isinstance(task, Block):
+                    for section in ('block', 'rescue', 'always'):
+                        walk(getattr(task, section), path + ((task._uuid, section),))
+                else:
+                    if task.implicit and implicit_tasks is not None:
+                        # Play.compile creates new lifecycle tasks. Match the actual
+                        # filtered tasks so exclusions precede automatic handler flushes.
+                        task = next(implicit)
+                    details = None
+                    if not task.implicit and task._uuid not in selected:
+                        details = {
+                            'skip_reason': 'Task tags do not match --tags/--skip-tags selection',
+                            'task_tags': task.tags,
+                            'only_tags': sorted(play.only_tags),
+                            'skip_tags': sorted(play.skip_tags),
+                            'path': task.get_path() or 'unknown source',
+                        }
+                    entries.append((task, details, path))
+
+        walk(blocks, self._inspect_tag_previous[1] if self._inspect_tag_previous else ())
+        at = self._inspect_tag_insert_at
+        self._inspect_tag_tasks[at:at] = entries
+        self._inspect_tag_insert_at += len(entries)
+        self._inspect_tag_positions = {}
+        for index, (task, _, _) in enumerate(self._inspect_tag_tasks):
+            self._inspect_tag_positions.setdefault(task._uuid, []).append(index)
+
+    def _advance_tag_tasks(self, host_tasks, iterator, hosts):
+        """Print only exclusions passed on the actual path through the play."""
+        current = None
+        for _, task in host_tasks:
+            if task is None:
+                continue
+            position = next((index for index in self._inspect_tag_positions.get(task._uuid, [])
+                             if index >= self._inspect_tag_cursor), None)
+            if position is not None:
+                current = task
+                stop = position
+                break
+        if current is None:
+            if any(task is not None for _, task in host_tasks):
+                return  # implicit tasks and handlers do not advance the source queue
+            if iterator.end_play or not any(
+                host.name not in self._tqm._failed_hosts
+                and host.name not in self._tqm._unreachable_hosts
+                for host in hosts
+            ):
+                return
+            stop = len(self._inspect_tag_tasks)
+            current_path = ()
+        else:
+            current_path = self._inspect_tag_tasks[stop][2]
+        if stop < self._inspect_tag_cursor:
+            return
+
+        previous_path = self._inspect_tag_previous[1] if self._inspect_tag_previous else ()
+        last_result = self._inspect_last_result
+        previous_failed = bool(
+            self._inspect_tag_previous and last_result
+            and last_result['task_uuid'] == self._inspect_tag_previous[0]
+            and last_result['hosts']
+            and all(value['status'] in ('failed', 'unreachable')
+                    for value in last_result['hosts'].values())
+        )
+        for task, details, path in self._inspect_tag_tasks[self._inspect_tag_cursor:stop]:
+            if details is None:
+                continue
+            if any(section == 'rescue' and (block, section) not in current_path
+                   and (block, section) not in previous_path for block, section in path):
+                continue
+            if any((block, section) in previous_path
+                   and previous_failed
+                   and (block, section) not in current_path for block, section in path):
+                continue
+            if self._inspect_show_tag_skips:
+                self._display_skip('tags', task, details)
+        self._inspect_tag_cursor = stop + (current is not None)
+        self._inspect_tag_insert_at = self._inspect_tag_cursor
+        if current is not None:
+            self._inspect_tag_previous = (current._uuid, current_path)
+
+    def _display_skip(self, host_name, task, details):
+        """Print a cyan skip event and its available reason with secret masking."""
+        rendered = json.dumps(
+            _normalize_value(details, mask_secrets=True),
+            ensure_ascii=False, indent=4, default=to_text,
+        )
+        self._display.display(
+            'skipping: [%s] %s => %s' % (host_name, task.get_name(), rendered),
+            color=C.COLOR_SKIP,
+        )
+
+    def _show_skipped_item_result(self, result):
+        self._inspect_skipped_items.add((result._task._uuid, result._host.get_name()))
+        self._show_skipped_result(result, is_item=True)
+
+    def _show_skipped_result(self, result, is_item=False):
+        """Use the callback's sanitized result, respecting task and item no_log."""
+        key = (result._task._uuid, result._host.get_name())
+        if not is_item and key in self._inspect_skipped_items:
+            self._inspect_skipped_items.discard(key)
+            return
+        data = result._result
+        if data.get('results'):
+            # Each skipped loop item has its own callback; avoid a second summary.
+            return
+        details = {key: value for key, value in data.items() if not key.startswith('_ansible_')}
+        if (
+            details.get('skip_reason') == 'Conditional result was False'
+            and 'false_condition' not in details
+            and 'censored' not in details
+        ):
+            # Older Ansible versions return only a generic reason. Show the original
+            # conditions without re-evaluating them or guessing which one failed.
+            details['when'] = result._task.when
+        if not any(key in details for key in ('skip_reason', 'skipped_reason', 'msg', 'censored')):
+            details['skip_reason'] = 'Ansible skipped this task without a reason'
+        self._display_skip(result._host.get_name(), result._task, details)
+
+    def _show_operator_skip(self, task, hosts, reason):
+        for host in hosts:
+            self._display_skip(host.get_name(), task, {'skip_reason': reason})
+
+    def _set_tag_skips(self, parts):
+        """Toggle diagnostics for future tag exclusions without replaying history."""
+        if len(parts) > 2 or (len(parts) == 2 and parts[1].lower() not in ('on', 'off')):
+            self._display.display('Usage: tag-skips [on|off]')
+            return
+        if len(parts) == 2:
+            self._inspect_show_tag_skips = parts[1].lower() == 'on'
+        self._display.display('Tag skips: %s' % ('on' if self._inspect_show_tag_skips else 'off'))
 
     def _check_ansible_version(self):
         """Report compatibility and reject known-incompatible ansible-core versions.
@@ -450,8 +654,10 @@ class StrategyModule(LinearStrategy):
         """
         # EN/RU: A no_log override belongs only to the previously selected lockstep task.
         self._inspect_no_log_overrides.clear()
+        self._inspect_skipped_items.clear()
         self._ensure_task_catalog(iterator)
         host_tasks = super(StrategyModule, self)._get_next_task_lockstep(hosts, iterator)
+        self._advance_tag_tasks(host_tasks, iterator, hosts)
         hosts_by_task = {}
         for host, task in host_tasks:
             if task is not None:
@@ -3025,6 +3231,7 @@ class StrategyModule(LinearStrategy):
                 response = self._display.prompt('\ninspect-step> ').strip()
             except EOFError:
                 self._display.warning('End of input; task skipped')
+                self._show_operator_skip(task, hosts, 'End of input at the inspector prompt')
                 return False
 
             command = response.lower()
@@ -3059,6 +3266,7 @@ class StrategyModule(LinearStrategy):
                 return True
             if command in ('s', 'skip'):
                 self._display.display('\nSKIP: %s' % task.get_name())
+                self._show_operator_skip(task, hosts, 'Skipped by operator (s/skip)')
                 return False
             if command in ('g', 'go'):
                 if not self._inspect_breakpoints:
@@ -3082,6 +3290,9 @@ class StrategyModule(LinearStrategy):
                 continue
             if command == 'hosts':
                 self._show_hosts(hosts, inspect_host)
+                continue
+            if verb == 'tag-skips':
+                self._set_tag_skips(parts)
                 continue
             if command == 'raw':
                 self._display_value(task.args)

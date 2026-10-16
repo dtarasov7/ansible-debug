@@ -2,9 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.3.0] - 2026-10-16
+
+### Changed
+
+- Tag exclusions appear at their position between executed tasks, including dynamic includes and trailing play exclusions. `tag-skips on` enables future output without replaying history. Unvisited `rescue` branches, `--start-at-task`, `end_play`, and unhandled failures are respected.
+
+## [2.2.0] - 2026-10-16
+
+### Added
+
+- Explicit cyan `skipping` output with task and loop-item reasons in step mode, including manual skips and older Ansible versions without `false_condition`, preserving `no_log` result censorship.
+- Optional `--tags` / `--skip-tags` exclusion diagnostics: `ANSIBLE_INSPECT_SHOW_TAG_SKIPS=true` at startup and `tag-skips [on|off]` at the prompt, including dynamic tasks and roles.
+- Integration coverage for skip reasons, runtime toggling, color, and unchanged execution/recap compared with `linear`.
 
 ## [2.1.0] - 2026-09-28
 

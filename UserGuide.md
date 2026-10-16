@@ -2,7 +2,7 @@
 
 [English](UserGuide.md) | [Русский](UserGuide-ru.md)
 
-This guide describes installation, daily use, variable inspection, runtime variable changes, security considerations, and troubleshooting for `inspect_step` version 2.1.0.
+This guide describes installation, daily use, variable inspection, runtime variable changes, security considerations, and troubleshooting for `inspect_step` version 2.3.0.
 
 ## 1. Purpose
 
@@ -115,7 +115,7 @@ ansible-playbook -i inventory playbook.yml --limit web --step
 At strategy initialization, the following line is printed once per `ansible-playbook` process:
 
 ```text
-inspect_step version 2.1.0
+inspect_step version 2.3.0
 Ansible compatibility: ansible-core 2.13.13 is the primary tested version (technical range 2.12-2.13).
 ```
 
@@ -174,6 +174,7 @@ Implicit tasks such as `Gathering Facts` may not have original parsed task data.
 | `loop template ITEM [host=HOST]` | Render the template for one selected item | Disabled intentionally |
 | `result [HOST\|all] [depth=N]` | Display the previous executed task result | Enabled |
 | `result! [HOST\|all] [depth=N]` | Display the previous result without masking | Disabled intentionally |
+| `tag-skips [on\|off]` | Show/hide tasks excluded by tags; no argument displays the setting | Enabled |
 | `watch add EXPRESSION [host=HOST]` | Add an expression displayed at each stop | Disabled |
 | `watch list`, `watch delete ID` | List or delete expression watches | Not applicable |
 | `tasks [tree] [host=HOST] [regex=REGEXP] [role=NAME] [tag=TAG]` | Browse statically known and runtime-expanded tasks | Not applicable |
@@ -250,6 +251,38 @@ SKIP: application : Restart service
 `skip` is equivalent to `s`. For a lockstep task, it skips the task for the current active host group.
 
 The inspector opens one decision prompt for every explicit `ansible.builtin.meta` task, even though ansible-core normally excludes meta actions from `--step`. One decision applies to the complete active lockstep host group: `r` executes the action with its normal Ansible semantics, while `s` skips it for the group. For example, skipping `end_play` proceeds to the next task, while running it ends the play. Implicit `noop`, `flush_handlers`, and `role_complete` tasks created by Ansible remain hidden and execute normally.
+
+### Skip reasons and tag filtering
+
+When the inspector starts with `--step`, every skipped task or loop item immediately prints in Ansible's skip color (`COLOR_SKIP`, cyan by default), regardless of `-v` and `display_skipped_hosts`:
+
+```text
+skipping: [web01] application : Configure service => {
+    "changed": false,
+    "skip_reason": "Conditional result was False",
+    "false_condition": "app_enabled | bool"
+}
+```
+
+The output uses Ansible's sanitized callback result with additional secret-key masking: the reason, false condition, module message, and available item data. Older Ansible versions without `false_condition` show the original `when` list; this does not claim to evaluate each condition. Conditions are never evaluated again. Empty loops report that there are no items. `no_log` censors reasons and result data; manual `s` reports `Skipped by operator (s/skip)`. Skip diagnostics continue after `c`, during `go`, and inside `run-all`. Other callback plugins still receive Ansible's normal events.
+
+Ansible filters tasks using `--tags` / `--skip-tags` before execution. Enable diagnostics for these exclusions through the environment:
+
+```bash
+ANSIBLE_INSPECT_SHOW_TAG_SKIPS=true ansible-playbook -i inventory playbook.yml --step --tags application --skip-tags destructive
+```
+
+This setting is off by default. During execution, use:
+
+```text
+tag-skips        # display the current setting
+tag-skips on     # enable future exclusion output
+tag-skips off    # disable further exclusion output
+```
+
+Each `skipping: [tags] TASK` entry contains `task_tags`, `only_tags`, `skip_tags`, `path`, and the tag-selection mismatch reason. Exclusions follow play execution order: after the previous task result and before the next task prompt. This includes static imports/roles and children of `include_tasks` / `include_role`. Trailing exclusions appear before the recap. Unvisited `rescue` branches are not displayed; tasks remaining after `end_play` or an unhandled failure are not reported as tag exclusions. With `--start-at-task`, diagnostics begin at the selected task. Toggling affects future execution only; re-enabling does not replay history. An excluded dynamic include is never loaded, so its children cannot be shown. Unnotified handlers and tasks bypassed by failures or `--start-at-task` are not reported as tag exclusions.
+
+These diagnostics do not change task selection, prompt for excluded tasks, or increase `skipped` in the recap. Tag diagnostics also work without `--step` when enabled through the environment; ordinary result output without `--step` remains with the selected stdout callback. Like other inspector messages, diagnostics are printed on screen; separate logging callbacks receive Ansible's normal events.
 
 ### Continue without normal task stops
 

@@ -1,4 +1,4 @@
-"""Regenerate standalone variants from the unchanged 2.12-2.13 implementation."""
+"""Regenerate standalone variants from the shared 2.12-2.13 implementation."""
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,11 +43,15 @@ modern = modern.replace('            AnsibleError: ansible-core 2.14 or newer us
 
 latest = modern.replace('2.14-2.18', '2.19-2.20').replace('2.18.19', '2.19.13').replace('name: inspect_step_2_14\n', 'name: inspect_step_2_19\n')
 latest = latest.replace('MINIMUM_ANSIBLE_VERSION = (2, 14)', 'MINIMUM_ANSIBLE_VERSION = (2, 19)').replace('MAXIMUM_ANSIBLE_VERSION = (2, 19)', 'MAXIMUM_ANSIBLE_VERSION = (2, 21)')
-latest = latest.replace('from ansible.template import AnsibleEnvironment, Templar, generate_ansible_template_vars', 'from ansible.template import Templar, trust_as_template\nfrom ansible._internal._templating._template_vars import generate_ansible_template_vars\nfrom unittest.mock import patch')
+latest = latest.replace('from ansible.template import AnsibleEnvironment, Templar, generate_ansible_template_vars', 'from ansible.template import Templar, trust_as_template\nfrom ansible._internal._templating._template_vars import generate_ansible_template_vars')
 latest = latest.replace('            evaluator = Conditional(loader=self._loader)\n            evaluator.when = [condition]\n', '')
 latest = latest.replace('matched = bool(evaluator.evaluate_conditional(templar, task_vars))', 'matched = templar.evaluate_conditional(condition)')
 latest = latest.replace('from ansible.playbook.conditional import Conditional\n', '').replace('from ansible.utils.listify import listify_lookup_plugin_terms\n', '').replace('from ansible.utils.unsafe_proxy import wrap_var\n', '')
 latest = latest.replace('task_result._task', 'task_result.task').replace('task_result._host', 'task_result.host').replace('task_result._result', 'task_result._return_data')
+latest = latest.replace('data = result._result', 'data = result.result')
+latest = latest.replace('result._host.get_name(), result._task, details', 'result.host.get_name(), result.task, details')
+latest = latest.replace('result._task.when', 'result.task.when')
+latest = latest.replace('result._task._uuid, result._host.get_name()', 'result.task._uuid, result.host.get_name()')
 latest = latest.replace('                expression,\n                fail_on_undefined=True,\n                disable_lookups=disable_lookups,', '                trust_as_template(expression),\n                fail_on_undefined=True,')
 # The old disable_lookups argument is ignored in 2.19+. Block loading throughout
 # this synchronous evaluation, including nested templates/hostvars, and restore it.
@@ -119,6 +123,9 @@ latest = latest[:a] + """        templated_args = _apply_action_arg_defaults(
             task.resolved_action or task.action, task, templated_args, templar,
         )
 """ + latest[b:]
+# 2.19+ dispatches the screen callback from the callback list and caches methods.
+latest = latest.replace('stdout = self._tqm._stdout_callback', 'stdout = self._tqm._callback_plugins[0]')
+latest = latest.replace("patch.object(stdout, 'v2_runner_item_on_skipped', self._show_skipped_item_result):", "patch.object(stdout, 'v2_runner_item_on_skipped', self._show_skipped_item_result), \\\n                        patch.object(stdout, '_implemented_callback_methods',\n                                     stdout._implemented_callback_methods | {\n                                         'v2_runner_on_skipped', 'v2_runner_item_on_skipped',\n                                     }):")
 (ROOT / 'strategy_plugins/inspect_step_2_19.py').write_text(latest, encoding='utf-8')
 
 # 2.21 replaces raw task results with HostTaskResult + UnifiedTaskResult.

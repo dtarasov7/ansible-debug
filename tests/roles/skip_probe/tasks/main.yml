@@ -1,0 +1,15 @@
+- name: excluded role task
+  fail:
+    msg: excluded role child must never run
+  tags: other
+
+- name: role conditional
+  debug:
+    msg: role conditional must not run
+  when: false
+  tags: chosen
+
+- name: excluded role tail
+  fail:
+    msg: excluded role tail must never run
+  tags: other

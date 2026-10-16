@@ -1,0 +1,4 @@
+- name: excluded static role task
+  fail:
+    msg: static role task must never run
+  tags: other

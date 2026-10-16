@@ -1,1 +1,1 @@
-ansible-playbook -i inventory playbook.yml --limit web01 --step
+ANSIBLE_INSPECT_SHOW_TAG_SKIPS=true  ansible-playbook -i inventory playbook.yml --limit test01 --step "$@"

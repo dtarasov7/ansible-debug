@@ -1,0 +1,104 @@
+- hosts: all
+  gather_facts: false
+  strategy: "{{ inspector }}"
+  vars:
+    enabled: false
+    filtered_tag: other
+  tasks:
+    - name: first anchor
+      debug:
+        msg: first anchor ran
+      tags: always
+
+    - name: excluded static task
+      fail:
+        msg: excluded task must never run
+      tags: other
+
+    - name: excluded by skip tags
+      fail:
+        msg: banned task must never run
+      tags: [chosen, banned]
+
+    - name: excluded never task
+      fail:
+        msg: never task must never run
+      tags: never
+
+    - import_tasks: skips-static.yml
+
+    - import_role:
+        name: skip_static_probe
+
+    - name: excluded inherited block
+      tags: "{{ filtered_tag }}"
+      block:
+        - name: excluded inherited task
+          fail:
+            msg: inherited task must never run
+      rescue:
+        - name: excluded rescue task
+          fail:
+            msg: rescue task must never run
+      always:
+        - name: excluded always task
+          fail:
+            msg: always task must never run
+
+    - name: false conditional
+      debug:
+        msg: conditional must not run
+      when: enabled
+      tags: chosen
+
+    - name: mixed loop
+      debug:
+        msg: "item {{ item }} ran"
+      loop: [run, skip]
+      when: item == 'run'
+      tags: chosen
+
+    - name: empty loop
+      debug:
+        msg: empty loop must not run
+      loop: []
+      tags: chosen
+
+    - name: protected skip
+      debug:
+        msg: private-result-marker
+      when: false
+      no_log: true
+      tags: chosen
+
+    - name: protected loop skip
+      debug:
+        msg: "{{ item }}"
+      loop: [private-item-marker]
+      when: false
+      no_log: true
+      tags: chosen
+
+    - name: operator skip
+      fail:
+        msg: operator-skipped task must not run
+      tags: [chosen, operator]
+
+    - name: dynamic include
+      include_tasks: skips-included.yml
+      tags: chosen
+
+    - name: dynamic role
+      include_role:
+        name: skip_probe
+      tags: chosen
+
+    - name: last anchor
+      debug:
+        msg: last anchor ran
+      tags: chosen
+
+    - name: excluded final tail
+      fail:
+        msg: excluded final tail must never run
+      tags: other

@@ -4,7 +4,7 @@
 
 `inspect_step` is an interactive strategy plugin for debugging Ansible playbooks and roles before each task is executed. It extends Ansible's `linear` strategy.
 
-Current version: **2.1.0**.
+Current version: **2.3.0**.
 
 Choose the implementation for your installed **ansible-core** version:
 
@@ -75,7 +75,17 @@ Run the playbook with `--step`:
 ansible-playbook -i inventory playbook.yml --limit web01 --step
 ```
 
-At startup, the plugin prints `inspect_step version 2.1.0` and the Ansible compatibility status. Before each executable task it displays the task definition and opens the `inspect-step>` prompt.
+At startup, the plugin prints `inspect_step version 2.3.0` and the Ansible compatibility status. Before each executable task it displays the task definition and opens the `inspect-step>` prompt.
+
+When a task or loop item is skipped, the inspector immediately prints a cyan `skipping: [HOST]` line with the task name and available reason (`skip_reason`, `false_condition`, `msg`). Older Ansible versions show the task's `when` list when `false_condition` is unavailable. This works without `-v`, including with `display_skipped_hosts=false`; `no_log` results remain censored.
+
+Tasks excluded by tags are hidden by default. Enable their display at startup:
+
+```bash
+ANSIBLE_INSPECT_SHOW_TAG_SKIPS=true ansible-playbook -i inventory playbook.yml --step --tags application
+```
+
+At the prompt, use `tag-skips on`, `tag-skips off`, or `tag-skips` to check the setting. Each `skipping: [tags]` entry includes task tags, `--tags`, `--skip-tags`, and the source path. Exclusions appear at their position between executed tasks, including dynamic include children. Toggling affects future exclusions only; past entries are not replayed. These entries describe filtering: excluded tasks never prompt or increase the recap's `skipped` count. See the [user guide](UserGuide.md) for details.
 
 ## Essential commands
 
@@ -102,6 +112,7 @@ loop eval ITEM JINJA [host=HOST]
 loop when|args|template ITEM [host=HOST]
                                 inspect one loop item without executing it
 result [HOST|all] [depth=N]     inspect the previous result
+tag-skips [on|off]              show/hide tasks excluded by tags
 watch add JINJA [host=HOST]     add an expression watch
 tasks [tree] [FILTERS]          browse tasks and include hierarchy
 break pick TASK_ID              add an exact breakpoint from the task browser

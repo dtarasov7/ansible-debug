@@ -4,7 +4,7 @@
 
 `inspect_step` — интерактивный strategy plugin для отладки Ansible playbook и ролей до выполнения каждой task. Он расширяет штатную стратегию `linear`.
 
-Текущая версия: **2.1.0**.
+Текущая версия: **2.3.0**.
 
 Выберите реализацию для установленной версии **ansible-core**:
 
@@ -75,7 +75,17 @@ strategy_plugins = ./strategy_plugins
 ansible-playbook -i inventory playbook.yml --limit web01 --step
 ```
 
-При запуске плагин выводит `inspect_step version 2.1.0` и статус совместимости с Ansible. Перед каждой исполняемой task он показывает её определение и открывает prompt `inspect-step>`.
+При запуске плагин выводит `inspect_step version 2.3.0` и статус совместимости с Ansible. Перед каждой исполняемой task он показывает её определение и открывает prompt `inspect-step>`.
+
+При пропуске task или элемента loop inspector сразу печатает бирюзовую строку `skipping: [HOST]` с именем task и доступной причиной (`skip_reason`, `false_condition`, `msg`). Для старых версий Ansible вместо отсутствующего `false_condition` показывается список `when`. Вывод работает без `-v`, в том числе при `display_skipped_hosts=false`; результаты с `no_log` остаются скрытыми.
+
+Показ задач, исключённых по тегам, по умолчанию выключен. Включить при запуске:
+
+```bash
+ANSIBLE_INSPECT_SHOW_TAG_SKIPS=true ansible-playbook -i inventory playbook.yml --step --tags application
+```
+
+В prompt используйте `tag-skips on`, `tag-skips off` или `tag-skips` для просмотра состояния. Строки `skipping: [tags]` содержат теги task, `--tags`, `--skip-tags` и путь к исходнику. Исключения показываются на своём месте между выполняемыми задачами, включая потомков dynamic includes. Переключение действует только на дальнейшие пропуски: история не повторяется. Это диагностика фильтрации: исключённые tasks не открывают prompt и не увеличивают `skipped` в recap. Подробнее — в [руководстве](UserGuide-ru.md).
 
 ## Основные команды
 
@@ -102,6 +112,7 @@ loop eval ITEM JINJA [host=HOST]
 loop when|args|template ITEM [host=HOST]
                                 исследовать item без его выполнения
 result [HOST|all] [depth=N]     показать результат предыдущей task
+tag-skips [on|off]              показать/скрыть задачи, исключённые по тегам
 watch add JINJA [host=HOST]     добавить наблюдаемое выражение
 tasks [tree] [FILTERS]          показать tasks и иерархию includes
 break pick TASK_ID              добавить точный breakpoint из списка tasks

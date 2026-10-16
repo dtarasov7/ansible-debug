@@ -1,0 +1,4 @@
+- name: excluded imported task
+  fail:
+    msg: imported task must never run
+  tags: other

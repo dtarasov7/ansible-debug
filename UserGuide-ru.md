@@ -2,7 +2,7 @@
 
 [English](UserGuide.md) | [Русский](UserGuide-ru.md)
 
-В этом руководстве описаны установка, повседневное использование, просмотр переменных, изменение значений во время выполнения, безопасность и диагностика проблем для `inspect_step` версии 2.1.0.
+В этом руководстве описаны установка, повседневное использование, просмотр переменных, изменение значений во время выполнения, безопасность и диагностика проблем для `inspect_step` версии 2.3.0.
 
 ## 1. Назначение
 
@@ -115,7 +115,7 @@ ansible-playbook -i inventory playbook.yml --limit web --step
 При инициализации стратегии один раз на процесс `ansible-playbook` выводится строка:
 
 ```text
-inspect_step version 2.1.0
+inspect_step version 2.3.0
 Ansible compatibility: ansible-core 2.13.13 is the primary tested version (technical range 2.12-2.13).
 ```
 
@@ -174,6 +174,7 @@ inspect-step>
 | `loop template ITEM [host=HOST]` | Отрендерить template для выбранного item | Намеренно отключено |
 | `result [HOST\|all] [depth=N]` | Показать результат предыдущей выполненной task | Включено |
 | `result! [HOST\|all] [depth=N]` | Показать предыдущий результат без маскирования | Намеренно отключено |
+| `tag-skips [on\|off]` | Показать/скрыть задачи, исключённые по тегам; без аргумента — состояние | Включено |
 | `watch add EXPRESSION [host=HOST]` | Добавить выражение для вывода на каждой остановке | Отключено |
 | `watch list`, `watch delete ID` | Показать или удалить watches | Не применяется |
 | `tasks [tree] [host=HOST] [regex=REGEXP] [role=NAME] [tag=TAG]` | Показать статически известные и runtime-раскрытые tasks | Не применяется |
@@ -250,6 +251,38 @@ SKIP: application : Restart service
 `skip` эквивалентна `s`. Для lockstep-task действие пропускает task для текущей активной группы hosts.
 
 Inspector открывает один prompt выбора для каждой явной task `ansible.builtin.meta`, хотя ansible-core обычно исключает meta-actions из `--step`. Одно решение применяется ко всей активной lockstep-группе hosts: `r` выполняет action с её штатной семантикой Ansible, а `s` пропускает её для группы. Например, пропуск `end_play` переходит к следующей task, а выполнение завершает play. Неявные tasks `noop`, `flush_handlers` и `role_complete`, созданные Ansible, остаются скрытыми и выполняются штатно.
+
+### Причины пропуска и фильтрация по тегам
+
+При запуске inspector с `--step` каждый фактический пропуск task или элемента loop сразу выводится бирюзовым цветом Ansible (`COLOR_SKIP`), независимо от `-v` и `display_skipped_hosts`:
+
+```text
+skipping: [web01] application : Configure service => {
+    "changed": false,
+    "skip_reason": "Conditional result was False",
+    "false_condition": "app_enabled | bool"
+}
+```
+
+Показывается очищенный Ansible callback-result с дополнительным маскированием ключей секретов: причина, ложное условие, сообщение модуля и доступные данные item. В старых Ansible без `false_condition` показывается исходный список `when`; это не результат вычисления каждого условия. Inspector не вычисляет условия повторно. Пустой loop сообщает об отсутствии items. `no_log` скрывает причину и данные результата; ручной `s` сообщает `Skipped by operator (s/skip)`. Этот вывод сохраняется после `c`, во время `go` и `run-all`. Остальные callback plugins получают штатные события Ansible.
+
+Ansible исключает tasks по `--tags` / `--skip-tags` до выполнения. Для их диагностического показа включите переменную окружения:
+
+```bash
+ANSIBLE_INSPECT_SHOW_TAG_SKIPS=true ansible-playbook -i inventory playbook.yml --step --tags application --skip-tags destructive
+```
+
+По умолчанию настройка выключена. В процессе доступны команды:
+
+```text
+tag-skips        # показать текущее состояние
+tag-skips on     # включить показ дальнейших исключений
+tag-skips off    # отключить дальнейший вывод исключений
+```
+
+Строка `skipping: [tags] TASK` содержит `task_tags`, `only_tags`, `skip_tags`, `path` и причину несовпадения с отбором. Исключения показываются в порядке прохождения play: после результата предыдущей задачи и до prompt следующей. Это относится к статическим imports/roles и потомкам `include_tasks` / `include_role`. Пропуски в конце play показываются перед recap. Ветки `rescue`, в которые выполнение не вошло, не выводятся; после `end_play` или необработанной ошибки оставшиеся задачи не выдаются за пропуски по тегам. При `--start-at-task` диагностика начинается с выбранной задачи. Переключение действует только на дальнейшее выполнение; повторное включение не выводит историю. Если сам dynamic include исключён, его содержимое не загружается и не показывается. Неуведомлённые handlers и задачи, обойдённые из-за failure или `--start-at-task`, не выдаются за пропуски по тегам.
+
+Диагностика не меняет выбор tasks, не открывает prompts для исключённых задач и не увеличивает `skipped` в recap. Показ по тегам работает и без `--step`, если переменная окружения включена; обычный вывод результатов без `--step` остаётся у выбранного stdout callback. Как и остальные сообщения inspector, строки диагностики выводятся на экран; отдельные callbacks журналирования получают штатные события Ansible.
 
 ### Продолжение без следующих обычных остановок task
 
